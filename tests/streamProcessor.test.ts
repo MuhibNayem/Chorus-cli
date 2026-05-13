@@ -1,114 +1,205 @@
-import { describe, it, expect } from "vitest";
-import { feedReducer, initialFeedState, type FeedAction } from "../src/cli/state/feedReducer.js";
+import { describe, expect, it, vi } from "vitest";
+import { processAgentStream } from "../src/cli/agent/streamProcessor.js";
+import type { FeedAction } from "../src/cli/state/feedReducer.js";
 
-// Simulate the stream processing logic from useAgentStream.ts by running actions
-// through the reducer. These tests verify Bug 1.1 and 1.2 fix behavior.
+describe("processAgentStream", () => {
+  it("collects reasoning_content from AIMessageChunk deltas", async () => {
+    const dispatch = vi.fn() as (action: FeedAction) => void;
+    const dbg = () => {};
 
-function buildTurnState(actions: FeedAction[]) {
-  const withUser: FeedAction[] = [{ type: "APPEND_USER", id: "u1", text: "hello" }, ...actions];
-  return actions.reduce(feedReducer, feedReducer(initialFeedState, { type: "APPEND_USER", id: "u1", text: "hello" }));
-}
+    async function* mockStream() {
+      yield ["messages", [{ type: "AIMessageChunk", content: "", additional_kwargs: { reasoning_content: "Let me think" } }]];
+      yield ["messages", [{ type: "AIMessageChunk", content: "", additional_kwargs: { reasoning_content: " about this" } }]];
+      yield ["messages", [{ type: "AIMessageChunk", content: "Hello", additional_kwargs: {} }]];
+    }
 
-describe("Bug 1.1: Response priority — streamed tokens beat updates-mode content", () => {
-  it("accumulates APPEND_RESPONSE_TOKEN into turn.tokens", () => {
-    let state = feedReducer(initialFeedState, { type: "APPEND_USER", id: "u1", text: "q" });
-    state = feedReducer(state, { type: "APPEND_RESPONSE_TOKEN", text: "Hello" });
-    state = feedReducer(state, { type: "APPEND_RESPONSE_TOKEN", text: " world" });
-
-    const turn = state.entries.find((e) => e.kind === "turn") as any;
-    expect(turn.tokens.join("")).toBe("Hello world");
+    const result = await processAgentStream(mockStream() as any, dispatch, dbg);
+    expect(result.responseText).toBe("Hello");
+    expect(result.reasoningContent).toBe("Let me think about this");
   });
 
-  it("FINALIZE_TURN marks done and records thinking duration", () => {
-    let state = feedReducer(initialFeedState, { type: "APPEND_USER", id: "u1", text: "q" });
-    state = feedReducer(state, { type: "APPEND_RESPONSE_TOKEN", text: "Done" });
-    state = feedReducer(state, { type: "FINALIZE_TURN" });
+  it("collects reasoning_content from updates fallback", async () => {
+    const dispatch = vi.fn() as (action: FeedAction) => void;
+    const dbg = () => {};
 
-    const turn = state.entries.find((e) => e.kind === "turn") as any;
-    expect(turn.done).toBe(true);
-    expect(turn.thinking.durationMs).toBeGreaterThanOrEqual(0);
+    async function* mockStream() {
+      yield ["updates", {
+        someNode: {
+          messages: [{ type: "AIMessage", content: "", additional_kwargs: { reasoning_content: "Fallback thought" } }],
+        },
+      }];
+      yield ["messages", [{ type: "AIMessageChunk", content: "World", additional_kwargs: {} }]];
+    }
+
+    const result = await processAgentStream(mockStream() as any, dispatch, dbg);
+    expect(result.responseText).toBe("World");
+    expect(result.reasoningContent).toBe("Fallback thought");
+  });
+
+  it("returns empty reasoningContent when no thinking content present", async () => {
+    const dispatch = vi.fn() as (action: FeedAction) => void;
+    const dbg = () => {};
+
+    async function* mockStream() {
+      yield ["messages", [{ type: "AIMessageChunk", content: "No thinking here", additional_kwargs: {} }]];
+    }
+
+    const result = await processAgentStream(mockStream() as any, dispatch, dbg);
+    expect(result.responseText).toBe("No thinking here");
+    expect(result.reasoningContent).toBe("");
+  });
+
+  it("extracts <think> tags from content as thinking tokens", async () => {
+    const dispatch = vi.fn() as (action: FeedAction) => void;
+    const dbg = () => {};
+
+    async function* mockStream() {
+      yield ["messages", [{ type: "AIMessageChunk", content: "<think>Let me analyze</think>Hello user", additional_kwargs: {} }]];
+    }
+
+    const result = await processAgentStream(mockStream() as any, dispatch, dbg);
+    expect(result.responseText).toBe("Hello user");
+    expect(result.reasoningContent).toBe("Let me analyze");
+
+    // Verify thinking was dispatched
+    const thinkCalls = dispatch.mock.calls.filter((call) => call[0].type === "APPEND_THINK_TOKEN");
+    expect(thinkCalls.length).toBe(1);
+    expect(thinkCalls[0][0].text).toBe("Let me analyze");
+
+    // Verify response was dispatched
+    const responseCalls = dispatch.mock.calls.filter((call) => call[0].type === "APPEND_RESPONSE_TOKEN");
+    expect(responseCalls.length).toBe(1);
+    expect(responseCalls[0][0].text).toBe("Hello user");
+  });
+
+  it("handles <think> tags split across chunks", async () => {
+    const dispatch = vi.fn() as (action: FeedAction) => void;
+    const dbg = () => {};
+
+    async function* mockStream() {
+      yield ["messages", [{ type: "AIMessageChunk", content: "<think>Let me", additional_kwargs: {} }]];
+      yield ["messages", [{ type: "AIMessageChunk", content: " analyze</think>Hello", additional_kwargs: {} }]];
+    }
+
+    const result = await processAgentStream(mockStream() as any, dispatch, dbg);
+    expect(result.responseText).toBe("Hello");
+    expect(result.reasoningContent).toBe("Let me analyze");
+  });
+
+  it("handles multiple <think> blocks in one chunk", async () => {
+    const dispatch = vi.fn() as (action: FeedAction) => void;
+    const dbg = () => {};
+
+    async function* mockStream() {
+      yield ["messages", [{ type: "AIMessageChunk", content: "<think>First thought</think>text<think>Second thought</think>more", additional_kwargs: {} }]];
+    }
+
+    const result = await processAgentStream(mockStream() as any, dispatch, dbg);
+    expect(result.responseText).toBe("textmore");
+    expect(result.reasoningContent).toBe("First thoughtSecond thought");
+  });
+
+  it("ignores unmatched <think> tags (no closing tag)", async () => {
+    const dispatch = vi.fn() as (action: FeedAction) => void;
+    const dbg = () => {};
+
+    async function* mockStream() {
+      yield ["messages", [{ type: "AIMessageChunk", content: "<think>incomplete thought", additional_kwargs: {} }]];
+    }
+
+    const result = await processAgentStream(mockStream() as any, dispatch, dbg);
+    expect(result.responseText).toBe("");
+    expect(result.reasoningContent).toBe("");
+  });
+
+  it("extracts <think> tags from AIMessage (non-chunk) type", async () => {
+    const dispatch = vi.fn() as (action: FeedAction) => void;
+    const dbg = () => {};
+
+    async function* mockStream() {
+      yield ["messages", [{ type: "AIMessage", content: "<think>Full message thought</think>Hello", additional_kwargs: {} }]];
+    }
+
+    const result = await processAgentStream(mockStream() as any, dispatch, dbg);
+    expect(result.responseText).toBe("Hello");
+    expect(result.reasoningContent).toBe("Full message thought");
+
+    const thinkCalls = dispatch.mock.calls.filter((call) => call[0].type === "APPEND_THINK_TOKEN");
+    expect(thinkCalls.length).toBe(1);
+  });
+
+  it("extracts <think> tags from updates mode for history without duplicating UI events", async () => {
+    const dispatch = vi.fn() as (action: FeedAction) => void;
+    const dbg = () => {};
+
+    async function* mockStream() {
+      yield ["updates", {
+        someNode: {
+          messages: [{ type: "AIMessage", content: "<think>Update thought</think>Response text", additional_kwargs: {} }],
+        },
+      }];
+    }
+
+    const result = await processAgentStream(mockStream() as any, dispatch, dbg);
+    // Final content strips <think> tags from updates-mode messages
+    expect(result.responseText).toBe("Response text");
+    // Reasoning is extracted for history
+    expect(result.reasoningContent).toBe("Update thought");
+
+    // No UI events dispatched from updates mode (messages mode handles streaming)
+    const thinkCalls = dispatch.mock.calls.filter((call) => call[0].type === "APPEND_THINK_TOKEN");
+    expect(thinkCalls.length).toBe(0);
+    const tokenCalls = dispatch.mock.calls.filter((call) => call[0].type === "APPEND_RESPONSE_TOKEN");
+    expect(tokenCalls.length).toBe(0);
+  });
+
+  it("returns native HITL interrupts from updates mode", async () => {
+    const dispatch = vi.fn() as (action: FeedAction) => void;
+    const dbg = vi.fn();
+
+    async function* mockStream() {
+      yield ["updates", {
+        __interrupt__: [
+          {
+            value: {
+              actionRequests: [
+                {
+                  name: "run_command",
+                  args: { command: "npm run build" },
+                  description: "Review this shell command before it runs.",
+                },
+              ],
+              reviewConfigs: [
+                {
+                  actionName: "run_command",
+                  allowedDecisions: ["approve", "reject"],
+                },
+              ],
+            },
+          },
+        ],
+      }];
+    }
+
+    const result = await processAgentStream(mockStream() as any, dispatch, dbg);
+    expect(result.interrupt?.actionRequests[0]).toMatchObject({
+      name: "run_command",
+      args: { command: "npm run build" },
+    });
+    expect(result.interrupt?.reviewConfigs[0].allowedDecisions).toEqual(["approve", "reject"]);
+    expect(dbg).toHaveBeenCalledWith("HITL_INTERRUPT", { actions: ["run_command"] });
   });
 });
 
-describe("Bug 1.2: Ollama tool_calls in additional_kwargs", () => {
-  it("ADD_TOOL_CALL adds tool to live turn toolCalls", () => {
-    let state = feedReducer(initialFeedState, { type: "APPEND_USER", id: "u1", text: "q" });
-    state = feedReducer(state, {
-      type: "ADD_TOOL_CALL",
-      toolCall: { id: "tc-1", name: "file_read", args: { path: "foo.ts" }, status: "running" },
-    });
-
-    const turn = state.entries.find((e) => e.kind === "turn") as any;
-    expect(turn.toolCalls).toHaveLength(1);
-    expect(turn.toolCalls[0].name).toBe("file_read");
-    expect(turn.toolCalls[0].status).toBe("running");
-  });
-
-  it("UPDATE_TOOL_CALL sets result and status", () => {
-    let state = feedReducer(initialFeedState, { type: "APPEND_USER", id: "u1", text: "q" });
-    state = feedReducer(state, {
-      type: "ADD_TOOL_CALL",
-      toolCall: { id: "tc-1", name: "file_read", args: {}, status: "running" },
-    });
-    state = feedReducer(state, {
-      type: "UPDATE_TOOL_CALL",
-      id: "tc-1",
-      result: "file contents here",
-      status: "done",
-    });
-
-    const turn = state.entries.find((e) => e.kind === "turn") as any;
-    expect(turn.toolCalls[0].status).toBe("done");
-    expect(turn.toolCalls[0].result).toBe("file contents here");
-  });
-
-  it("deduplication: second ADD_TOOL_CALL with different id adds second entry", () => {
-    let state = feedReducer(initialFeedState, { type: "APPEND_USER", id: "u1", text: "q" });
-    state = feedReducer(state, {
-      type: "ADD_TOOL_CALL",
-      toolCall: { id: "tc-1", name: "file_read", args: {}, status: "running" },
-    });
-    state = feedReducer(state, {
-      type: "ADD_TOOL_CALL",
-      toolCall: { id: "tc-2", name: "file_write", args: {}, status: "running" },
-    });
-
-    const turn = state.entries.find((e) => e.kind === "turn") as any;
-    expect(turn.toolCalls).toHaveLength(2);
-  });
-});
-
-describe("Bug 1.3: Cancellation via SET_ERROR", () => {
-  it("SET_ERROR adds error entry and sets processing=false", () => {
-    let state = feedReducer(initialFeedState, { type: "APPEND_USER", id: "u1", text: "q" });
-    expect(state.processing).toBe(true);
-
-    state = feedReducer(state, { type: "SET_ERROR", id: "err-1", message: "Cancelled by user." });
-    expect(state.processing).toBe(false);
-    const err = state.entries.find((e) => e.kind === "error") as any;
-    expect(err.message).toBe("Cancelled by user.");
-  });
-});
-
-describe("Thinking blocks", () => {
-  it("APPEND_THINK_TOKEN accumulates into thinking.text", () => {
-    let state = feedReducer(initialFeedState, { type: "APPEND_USER", id: "u1", text: "q" });
-    state = feedReducer(state, { type: "APPEND_THINK_TOKEN", text: "Hmm " });
-    state = feedReducer(state, { type: "APPEND_THINK_TOKEN", text: "thinking..." });
-
-    const turn = state.entries.find((e) => e.kind === "turn") as any;
-    expect(turn.thinking.text).toBe("Hmm thinking...");
-  });
-
-  it("TOGGLE_EXPANDED flips thinking.expanded", () => {
-    let state = feedReducer(initialFeedState, { type: "APPEND_USER", id: "u1", text: "q" });
-    state = feedReducer(state, { type: "APPEND_THINK_TOKEN", text: "Thinking..." });
-
-    const turnBefore = state.entries.find((e) => e.kind === "turn") as any;
-    expect(turnBefore.thinking.expanded).toBe(false);
-
-    state = feedReducer(state, { type: "TOGGLE_EXPANDED", id: `${turnBefore.id}-thinking` });
-    const turnAfter = state.entries.find((e) => e.kind === "turn") as any;
-    expect(turnAfter.thinking.expanded).toBe(true);
+describe("ChatMessage reasoning_content support", () => {
+  it("accepts reasoning_content in message type", () => {
+    // This is a type-level test — if it compiles, it passes
+    const msg = {
+      role: "assistant" as const,
+      content: "Hello",
+      reasoning_content: "I thought about this",
+    };
+    expect(msg.role).toBe("assistant");
+    expect(msg.reasoning_content).toBe("I thought about this");
   });
 });

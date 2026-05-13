@@ -1,10 +1,9 @@
 import { Box, Text } from "ink";
-import type { ThinkingState } from "../state/feedReducer.js";
+import type { ThinkingEvent } from "../state/feedReducer.js";
 import { useSpinner } from "../hooks/useSpinner.js";
 
 interface ThinkingBlockProps {
-  thinking: ThinkingState;
-  turnId: string;
+  event: ThinkingEvent;
   focused: boolean;
   isActive?: boolean;
 }
@@ -14,15 +13,15 @@ function formatDuration(ms?: number): string {
   return ms < 1_000 ? ` ${ms}ms` : ` ${(ms / 1_000).toFixed(1)}s`;
 }
 
-export function ThinkingBlock({ thinking, focused, isActive = false }: ThinkingBlockProps) {
-  if (!thinking.text) return null;
+export function ThinkingBlock({ event, focused, isActive = false }: ThinkingBlockProps) {
+  if (!event.text) return null;
 
   const spinner  = useSpinner(isActive);
-  const duration = formatDuration(thinking.durationMs);
+  const duration = formatDuration(event.durationMs);
   const hint     = focused ? "  {Space}" : "";
   const color    = focused ? "cyan" : "grey";
 
-  if (!thinking.expanded) {
+  if (!event.expanded) {
     return (
       <Box marginLeft={2} marginBottom={0}>
         <Text color={color}>
@@ -38,7 +37,7 @@ export function ThinkingBlock({ thinking, focused, isActive = false }: ThinkingB
         {isActive ? `${spinner} Thinking…` : `▼ Thinking${duration}${hint}`}
       </Text>
       <Box marginLeft={2}>
-        <Text color="grey" dimColor wrap="wrap">{thinking.text}</Text>
+        <Text color="grey" dimColor wrap="wrap">{event.text}</Text>
       </Box>
     </Box>
   );

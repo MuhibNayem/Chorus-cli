@@ -1,14 +1,16 @@
 # Deep Agent CLI — Specification
 
+> Implementation note: the live codebase currently uses an Ink-based CLI with session persistence and deepagents-backed streaming. The Blessed split-pane design below is historical context, not the current runtime shape.
+
 ## Overview
 
-An interactive coding agent CLI with a split-pane TUI that streams `<|think|>` reasoning alongside final responses. Built on `deepagents` (LangGraph SDK), Ollama gemma:2b, with prompt caching, compaction, context visualization, and three specialized subagents.
+An interactive coding agent CLI with an Ink-based terminal UI that streams agent responses, tool calls, and thinking blocks alongside final responses. Built on `deepagents` (LangGraph SDK), Ollama, with token counting, compaction, context visualization, and three specialized subagents.
 
 ## Stack
 
 - **TypeScript** + **Node.js** (ES modules)
 - **deepagents** (`@langchain/langgraph` under the hood)
-- **Blessed** — TUI framework
+- **Ink** — TUI framework
 - **Ollama** — gemma:2b (128K context) + gemma:4:latest for summarization
 - **tiktoken** — token counting
 
@@ -126,7 +128,7 @@ Context: 48% [████████████░░░░░░░░░░
 
 ---
 
-## TUI Layout (Blessed)
+## TUI Layout (Ink)
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
@@ -220,36 +222,21 @@ deep-agent-cli/
 ├── tsconfig.json
 ├── .env.example
 ├── src/
-│   ├── index.ts                 # Entry point
+│   ├── index.ts
 │   ├── cli/
-│   │   ├── index.ts             # Blessed TUI bootstrap
-│   │   ├── panes/
-│   │   │   ├── ContextBar.ts
-│   │   │   ├── InputPane.ts
-│   │   │   ├── OutputPane.ts
-│   │   │   └── ToolLogPane.ts
-│   │   └── widgets/
-│   │       └── ProgressBar.ts
-│   ├── tools/
-│   │   ├── file.ts
-│   │   ├── shell.ts
-│   │   ├── git.ts
-│   │   └── web-search.ts
-│   ├── subagents/
-│   │   ├── planner.ts
-│   │   ├── vapt.ts
-│   │   └── builder.ts
+│   │   ├── App.tsx
+│   │   ├── commands.ts
+│   │   ├── components/
+│   │   ├── hooks/
+│   │   └── state/
 │   ├── context/
-│   │   ├── tokenizer.ts
-│   │   ├── compaction.ts
-│   │   └── cache.ts
 │   ├── ollama/
-│   │   ├── client.ts
-│   │   └── think-parser.ts
-│   └── prompts/
-│       └── system.ts
-└── docs/
-    └── SPEC.md
+│   ├── prompts/
+│   ├── session/
+│   ├── subagents/
+│   └── tools/
+└── tests/
+    └── feedReducer.test.ts
 ```
 
 ---

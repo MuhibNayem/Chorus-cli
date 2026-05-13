@@ -9,22 +9,26 @@ function getEncoder(): Tiktoken {
   return encoder;
 }
 
-export async function countTokens(text: string): Promise<number> {
+export function countTokens(text: string): number {
   const enc = getEncoder();
   return enc.encode(text).length;
 }
 
-export async function countMessagesTokens(
-  messages: Array<{ role: string; content: string }>,
+export function countMessagesTokens(
+  messages: Array<{ role: string; content: string; reasoning_content?: string }>,
   systemPrompt: string
-): Promise<number> {
-  let total = await countTokens(systemPrompt);
-
-  for (const msg of messages) {
-    total += await countTokens(`${msg.role}: ${msg.content}`);
-  }
-
-  return total;
+): number {
+  const serialized = [
+    systemPrompt,
+    ...messages.map((msg) => {
+      let text = `${msg.role}: ${msg.content}`;
+      if (msg.reasoning_content) {
+        text += `\n[reasoning]: ${msg.reasoning_content}`;
+      }
+      return text;
+    }),
+  ].join("\n");
+  return getEncoder().encode(serialized).length;
 }
 
 export function tokensToDisplay(tokens: number): string {

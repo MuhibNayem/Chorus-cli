@@ -57,7 +57,7 @@ export function SuggestionBox({ suggestions, selectedIndex, pageSize = 10 }: Sug
         <Text color="grey" dimColor>{`  ↓ ${suggestions.length - scrollOffset - pageSize} more`}</Text>
       )}
       <Box marginTop={0}>
-        <Text color="grey" dimColor>{"  Tab select · Esc dismiss"}</Text>
+        <Text color="grey" dimColor>{"  ↑↓ navigate · Tab/Enter select · Esc dismiss"}</Text>
       </Box>
     </Box>
   );

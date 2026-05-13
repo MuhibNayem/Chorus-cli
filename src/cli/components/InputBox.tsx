@@ -1,5 +1,4 @@
 import { Box, Text } from "ink";
-import { useInput } from "ink";
 import TextInput from "ink-text-input";
 
 interface InputBoxProps {
@@ -9,8 +8,7 @@ interface InputBoxProps {
   disabled: boolean;
   isPastePreviewed?: boolean;
   onDismissPaste?: () => void;
-  onHistoryUp?: () => void;
-  onHistoryDown?: () => void;
+  resetKey?: number;
 }
 
 const PASTE_PREVIEW_LINES = 4;
@@ -59,15 +57,8 @@ export function InputBox({
   disabled,
   isPastePreviewed = false,
   onDismissPaste,
-  onHistoryUp,
-  onHistoryDown,
+  resetKey = 0,
 }: InputBoxProps) {
-  useInput((_input, key) => {
-    if (disabled) return;
-    if (key.upArrow && onHistoryUp) { onHistoryUp(); return; }
-    if (key.downArrow && onHistoryDown) { onHistoryDown(); return; }
-  });
-
   function handleSubmit(submitted: string) {
     const trimmed = submitted.trim();
     if (!trimmed || disabled) return;
@@ -97,6 +88,7 @@ export function InputBox({
               </Text>
             ) : (
               <TextInput
+                key={resetKey}
                 value={value}
                 onChange={onChange}
                 onSubmit={handleSubmit}

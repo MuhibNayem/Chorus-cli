@@ -3,3 +3,6 @@ dist/
 .env
 *.js.map
 debug.log
+.chorus/audit/
+.chorus/memory.json
+.chorus/repo-intelligence.json

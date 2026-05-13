@@ -1,18 +1,20 @@
 import { Box, Text } from "ink";
 import { useSpinner } from "../hooks/useSpinner.js";
-import { formatCost, costColor } from "../../llm/pricing.js";
+import type { ApprovalPolicy, ExecutionMode } from "../../harness/types.js";
 
-const MODEL_NAME = process.env.OLLAMA_MODEL ?? "batiai/gemma4-e2b:q4";
-const MAX_TOKENS = 128_000;
+const DEFAULT_MAX_TOKENS = 128_000;
 const BAR_WIDTH = 20;
 
 export type AgentState = "idle" | "thinking" | "tool" | "error";
 
 interface StatusBarProps {
+  modelLabel: string;
   tokens: number;
   agentState: AgentState;
   sessionName?: string;
-  totalCost?: number;
+  maxTokens?: number;
+  executionMode?: ExecutionMode;
+  approvalPolicy?: ApprovalPolicy;
 }
 
 function tokensToDisplay(n: number): string {
@@ -35,11 +37,20 @@ const STATE_LABEL: Record<AgentState, string> = {
   error:    "Error",
 };
 
-export function StatusBar({ tokens, agentState, sessionName, totalCost = 0 }: StatusBarProps) {
+export function StatusBar({
+  modelLabel,
+  tokens,
+  agentState,
+  sessionName,
+  maxTokens,
+  executionMode = "build",
+  approvalPolicy = "auto_edit",
+}: StatusBarProps) {
   const isActive = agentState !== "idle" && agentState !== "error";
   const spinner  = useSpinner(isActive);
 
-  const percent  = Math.min(Math.round((tokens / MAX_TOKENS) * 100), 100);
+  const limit    = maxTokens ?? DEFAULT_MAX_TOKENS;
+  const percent  = Math.min(Math.round((tokens / limit) * 100), 100);
   const filled   = Math.round((percent / 100) * BAR_WIDTH);
   const bar      = "█".repeat(filled) + "░".repeat(BAR_WIDTH - filled);
   const barColor = percent < 50 ? "green" : percent < 80 ? "yellow" : "red";
@@ -54,20 +65,16 @@ export function StatusBar({ tokens, agentState, sessionName, totalCost = 0 }: St
 
   return (
     <Box borderStyle="single" borderColor="grey" paddingLeft={1} paddingRight={1}>
-      <Text bold color="white">{MODEL_NAME}</Text>
+      <Text bold color="white">{modelLabel}</Text>
       <Text>{"  "}</Text>
+      <Text color={executionMode === "plan" ? "yellow" : "green"}>{executionMode.toUpperCase()}</Text>
+      <Text color="grey">{`/${approvalPolicy.replace("_", "-")}  `}</Text>
       <Text color={STATE_DOT_COLOR[agentState] as any}>{"●"}</Text>
       <Text color="grey">{`  ${stateLabel}  `}</Text>
       {sessionTag ? <Text color="cyan" dimColor>{sessionTag}</Text> : null}
       <Text color="grey">{`CTX ${percent}%  `}</Text>
       <Text color={barColor as any}>{bar}</Text>
-      <Text color="grey">{`  ${tokensToDisplay(tokens)} / 128K`}</Text>
-      {totalCost > 0 && (
-        <>
-          <Text color="grey">{"  "}</Text>
-          <Text color={costColor(totalCost) as any}>{formatCost(totalCost)}</Text>
-        </>
-      )}
+      <Text color="grey">{`  ${tokensToDisplay(tokens)} / ${tokensToDisplay(limit)}`}</Text>
     </Box>
   );
 }

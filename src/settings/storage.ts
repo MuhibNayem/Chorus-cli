@@ -1,25 +1,55 @@
 import * as fs from "fs";
-import * as path from "path";
 import * as os from "os";
+import * as path from "path";
+import { getProviderById } from "./providers.js";
 
-const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+export type ChorusProviderSettings = {
+  apiKey?: string;
+  baseUrl?: string;
+  model?: string;
+  summaryModel?: string;
+};
 
-export interface PersistedApproval {
-  name: string;
-  expiresAt: number;
-}
-
-export interface ChorusSettings {
-  version: number;
-  approvals?: {
-    persistedTools: PersistedApproval[];
+export type ChorusSettings = {
+  llm?: {
+    provider?: string;
+    providers?: Record<string, ChorusProviderSettings>;
   };
+};
+
+let cachedSettings: ChorusSettings | null = null;
+
+function getChorusDir(): string {
+  const homeDir = process.env.CHORUS_HOME_DIR ?? os.homedir();
+  const dir = path.join(homeDir, ".chorus");
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
 }
 
-function getSettingsPath(): string {
-  const dir = path.join(os.homedir(), ".chorus");
-  fs.mkdirSync(dir, { recursive: true });
-  return path.join(dir, "settings.json");
+export function getSettingsPath(): string {
+  return path.join(getChorusDir(), "settings.json");
+}
+
+export function loadSettings(): ChorusSettings {
+  if (cachedSettings) {
+    return cachedSettings;
+  }
+
+  try {
+    cachedSettings = JSON.parse(fs.readFileSync(getSettingsPath(), "utf-8")) as ChorusSettings;
+  } catch {
+    cachedSettings = {};
+  }
+
+  return cachedSettings;
+}
+
+export function getProviderSettings(name: string): ChorusProviderSettings {
+  return loadSettings().llm?.providers?.[name] ?? {};
+}
+
+export function getGlobalProviderPreference(): string | undefined {
+  return loadSettings().llm?.provider;
 }
 
 function atomicWrite(filePath: string, data: unknown): void {
@@ -28,36 +58,48 @@ function atomicWrite(filePath: string, data: unknown): void {
   fs.renameSync(tmp, filePath);
 }
 
-export function loadSettings(): ChorusSettings {
-  try {
-    return JSON.parse(fs.readFileSync(getSettingsPath(), "utf-8")) as ChorusSettings;
-  } catch {
-    return { version: 1 };
-  }
-}
-
 export function saveSettings(settings: ChorusSettings): void {
-  const p = getSettingsPath();
-  atomicWrite(p, { ...settings, version: 1 });
-  try { fs.chmodSync(p, 0o600); } catch { /* non-POSIX systems */ }
+  atomicWrite(getSettingsPath(), settings);
+  cachedSettings = settings;
+  try {
+    fs.appendFileSync(
+      path.join(getChorusDir(), "save-debug.log"),
+      `[${new Date().toISOString()}] saved provider=${settings.llm?.provider ?? "?"}\n`
+    );
+  } catch { /* never crash on debug log */ }
 }
 
-export function loadPersistedApprovals(): PersistedApproval[] {
-  const settings = loadSettings();
-  const now = Date.now();
-  return (settings.approvals?.persistedTools ?? []).filter((a) => a.expiresAt > now);
+export type LlmSettingsField = string;
+
+export function getMissingLlmSettings(settings: ChorusSettings = loadSettings()): LlmSettingsField[] {
+  const providerId = settings.llm?.provider;
+  if (!providerId) {
+    return ["provider"];
+  }
+
+  const provider = getProviderById(providerId);
+  const pSettings = settings.llm?.providers?.[providerId] ?? {};
+  const missing: LlmSettingsField[] = [];
+
+  if (provider?.allowCustomBaseUrl && !pSettings.baseUrl) {
+    missing.push(`${providerId}.baseUrl`);
+  }
+
+  if (provider?.requiresApiKey && !pSettings.apiKey) {
+    missing.push(`${providerId}.apiKey`);
+  }
+
+  if (!pSettings.model) {
+    missing.push(`${providerId}.model`);
+  }
+
+  return missing;
 }
 
-export function persistApproval(toolName: string): void {
-  const settings = loadSettings();
-  const now = Date.now();
-  const tools = (settings.approvals?.persistedTools ?? [])
-    .filter((a) => a.expiresAt > now && a.name !== toolName);
-  tools.push({ name: toolName, expiresAt: now + SEVEN_DAYS_MS });
-  saveSettings({ ...settings, approvals: { persistedTools: tools } });
+export function hasRequiredLlmSettings(settings: ChorusSettings = loadSettings()): boolean {
+  return getMissingLlmSettings(settings).length === 0;
 }
 
-export function clearPersistedApprovals(): void {
-  const settings = loadSettings();
-  saveSettings({ ...settings, approvals: { persistedTools: [] } });
+export function clearSettingsCache(): void {
+  cachedSettings = null;
 }

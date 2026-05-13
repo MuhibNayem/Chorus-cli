@@ -2,21 +2,39 @@ import { useReducer, useState, useCallback, useEffect, useMemo, useRef } from "r
 import { Box, useApp, useInput } from "ink";
 import { globSync } from "glob";
 import * as fs from "fs";
-import * as os from "os";
 import * as path from "path";
 import { Feed } from "./components/Feed.js";
 import { InputBox } from "./components/InputBox.js";
 import { StatusBar, type AgentState } from "./components/StatusBar.js";
 import { SuggestionBox, type Suggestion } from "./components/SuggestionBox.js";
+import { SelectBox, type SelectItem } from "./components/SelectBox.js";
+import { SessionView } from "./components/SessionView.js";
 import { feedReducer, initialFeedState } from "./state/feedReducer.js";
 import { useAgentStream } from "./hooks/useAgentStream.js";
 import { handleSlashCommand, SLASH_COMMANDS } from "./commands.js";
+import { getProviderLabel, getProviderModel, getContextWindow, normalizeProviderName, resetDefaultProvider, getDefaultProvider } from "../llm/index.js";
 import { sessionManager } from "../session/manager.js";
+import { SettingsWizard } from "../settings/wizard.js";
+import { loadSettings, saveSettings, clearSettingsCache } from "../settings/storage.js";
+import { ALL_PROVIDERS, getProviderById } from "../settings/providers.js";
+import type { ChorusSettings } from "../settings/storage.js";
+import type { AgentSession } from "./state/feedReducer.js";
+import type { AgentDef } from "../agents/types.js";
+import type { ApprovalPolicy, ExecutionMode } from "../harness/types.js";
+import { loadAgents } from "../agents/loader.js";
+import { deleteAgent } from "../agents/storage.js";
+import { AgentCreator } from "./components/AgentCreator.js";
+import { AgentViewer } from "./components/AgentViewer.js";
+import { ApprovalCard } from "./components/ApprovalCard.js";
+
+type SelectionMode = {
+  title: string;
+  items: SelectItem[];
+  onSelect: (value: string) => void;
+} | null;
 
 const WORKSPACE = process.cwd();
-const MODEL_NAME = process.env.OLLAMA_MODEL ?? "batiai/gemma4-e2b:q4";
 
-// Preload workspace file list once (excludes node_modules/.git)
 function loadWorkspaceFiles(): string[] {
   try {
     return globSync("**/*", {
@@ -33,24 +51,21 @@ function loadWorkspaceFiles(): string[] {
 const SECRET_PATTERNS = [/\.env(\.|$)/i, /credentials/i, /secret/i, /\.pem$/i, /\.key$/i, /\.pfx$/i, /\.p12$/i, /id_rsa/i, /id_ed25519/i];
 
 function isSecretFile(filePath: string): boolean {
-  const base = path.basename(filePath);
-  return SECRET_PATTERNS.some((p) => p.test(base));
+  return SECRET_PATTERNS.some((re) => re.test(filePath));
 }
 
-// Expand @mention tokens to file content blocks
 function expandMentions(text: string, workspaceFiles: string[]): string {
   const mentionRe = /@([\w./\\-]+)/g;
   let expanded = text;
   const matches = [...text.matchAll(mentionRe)];
   for (const match of matches) {
     const mention = match[1];
-    // Find best-matching workspace file
     const found = workspaceFiles.find(
       (f) => f === mention || f.endsWith(`/${mention}`) || path.basename(f) === mention
     );
     if (!found) continue;
     if (isSecretFile(found)) {
-      expanded = expanded.replace(match[0], `@${found} [blocked: likely secret file]`);
+      expanded = expanded.replace(match[0], `@[${found} — secret file skipped]`);
       continue;
     }
     const absPath = path.join(WORKSPACE, found);
@@ -66,20 +81,6 @@ function expandMentions(text: string, workspaceFiles: string[]): string {
   return expanded;
 }
 
-const HISTORY_PATH = path.join(os.homedir(), ".chorus", "input-history.json");
-const HISTORY_MAX = 500;
-
-function loadHistory(): string[] {
-  try { return JSON.parse(fs.readFileSync(HISTORY_PATH, "utf-8")) as string[]; } catch { return []; }
-}
-
-function saveHistory(history: string[]): void {
-  try {
-    fs.mkdirSync(path.dirname(HISTORY_PATH), { recursive: true });
-    fs.writeFileSync(HISTORY_PATH, JSON.stringify(history.slice(0, HISTORY_MAX)), { mode: 0o600 });
-  } catch { /* non-fatal */ }
-}
-
 export function App() {
   const { exit }              = useApp();
   const [feedState, dispatch] = useReducer(feedReducer, initialFeedState);
@@ -88,39 +89,232 @@ export function App() {
   const [navFocusIndex, setNavFocusIndex] = useState(0);
   const [suggestionIndex, setSuggestionIndex] = useState(-1);
   const [isPastePreviewed, setIsPastePreviewed] = useState(false);
+  const [inputKey, setInputKey] = useState(0);
+  const [modelLabel, setModelLabel] = useState(getProviderLabel());
+  const [sessionProvider, setSessionProvider] = useState<string | null>(null);
+  const [sessionModel, setSessionModel] = useState<string | null>(null);
+  const [executionMode, setExecutionMode] = useState<ExecutionMode>("build");
+  const [approvalPolicy, setApprovalPolicy] = useState<ApprovalPolicy>("auto_edit");
+  const [wizardMode, setWizardMode] = useState<"add-provider" | null>(null);
+  const [agentCreatorOpen, setAgentCreatorOpen] = useState(false);
+  const [agentEditorTarget, setAgentEditorTarget] = useState<AgentDef | null>(null);
+  const [agentViewerTarget, setAgentViewerTarget] = useState<AgentDef | null>(null);
+  const [selectionMode, setSelectionMode] = useState<SelectionMode>(null);
+  const [selectionIndex, setSelectionIndex] = useState(0);
+  const [sessionViewId, setSessionViewId] = useState<string | null>(null);
+
+  const showModelSelectForProvider = useCallback((provider: string) => {
+    const ps = loadSettings().llm?.providers?.[provider] ?? {};
+    const providerDef = getProviderById(provider);
+    setSelectionMode({
+      title: `Select model  [${provider}]  loading…`,
+      items: [],
+      onSelect: (model) => {
+        setSessionProvider(provider);
+        setSessionModel(model);
+        setSelectionMode(null);
+        dispatch({ type: "APPEND_SYSTEM", id: `sys-${Date.now()}`, text: `Switched to ${provider}:${model} (session only)` });
+      },
+    });
+    setSelectionIndex(0);
+    void (providerDef?.listModels(ps.baseUrl ?? "", ps.apiKey ?? "") ?? Promise.resolve([]))
+      .then((models) => {
+        setSelectionMode((prev) =>
+          prev ? { ...prev, title: `Select model  [${provider}]`, items: models.map((m) => ({ value: m, label: m })) } : null
+        );
+        setSelectionIndex(0);
+      })
+      .catch(() => {
+        setSelectionMode(null);
+        dispatch({ type: "APPEND_SYSTEM", id: `sys-${Date.now()}`, text: `Could not load models for ${provider}.` });
+      });
+  }, [dispatch]);
+
+  const showProviderSelect = useCallback((currentProvider: string) => {
+    setSelectionMode({
+      title: "Select provider",
+      items: ALL_PROVIDERS.map((p) => ({ value: p.id, label: `${p.id.padEnd(12)}  ${p.label}` })),
+      onSelect: (provider) => {
+        setSessionProvider(provider);
+        setSessionModel(null);
+        showModelSelectForProvider(provider);
+      },
+    });
+    setSelectionIndex(Math.max(0, ALL_PROVIDERS.findIndex((p) => p.id === currentProvider)));
+  }, [showModelSelectForProvider]);
+
+  const showDefaultModelSelectForProvider = useCallback((provider: string) => {
+    const ps = loadSettings().llm?.providers?.[provider] ?? {};
+    const providerDef = getProviderById(provider);
+    setSelectionMode({
+      title: `Set default model  [${provider}]  loading…`,
+      items: [],
+      onSelect: (model) => {
+        try {
+          const existing = loadSettings();
+          saveSettings({
+            ...existing,
+            llm: {
+              ...existing.llm,
+              provider,
+              providers: {
+                ...existing.llm?.providers,
+                [provider]: { ...existing.llm?.providers?.[provider], model },
+              },
+            },
+          });
+          clearSettingsCache();
+          resetDefaultProvider();
+          // Clear session overrides so the new default takes effect immediately
+          setSessionProvider(null);
+          setSessionModel(null);
+          setModelLabel(getProviderLabel());
+          setSelectionMode(null);
+          dispatch({ type: "APPEND_SYSTEM", id: `sys-${Date.now()}`, text: `Default saved: ${provider}:${model}` });
+        } catch (err) {
+          setSelectionMode(null);
+          dispatch({ type: "APPEND_SYSTEM", id: `sys-${Date.now()}`, text: `Failed to save settings: ${err instanceof Error ? err.message : String(err)}` });
+        }
+      },
+    });
+    setSelectionIndex(0);
+    void (providerDef?.listModels(ps.baseUrl ?? "", ps.apiKey ?? "") ?? Promise.resolve([]))
+      .then((models) => {
+        setSelectionMode((prev) =>
+          prev ? { ...prev, title: `Set default model  [${provider}]`, items: models.map((m) => ({ value: m, label: m })) } : null
+        );
+        setSelectionIndex(0);
+      })
+      .catch(() => {
+        setSelectionMode(null);
+        dispatch({ type: "APPEND_SYSTEM", id: `sys-${Date.now()}`, text: `Could not load models for ${provider}.` });
+      });
+  }, [dispatch]);
+
+  const showDefaultProviderSelect = useCallback(() => {
+    const currentDefault = loadSettings().llm?.provider ?? "";
+    setSelectionMode({
+      title: "Set default provider",
+      items: ALL_PROVIDERS.map((p) => ({ value: p.id, label: `${p.id.padEnd(12)}  ${p.label}` })),
+      onSelect: (provider) => showDefaultModelSelectForProvider(provider),
+    });
+    setSelectionIndex(Math.max(0, ALL_PROVIDERS.findIndex((p) => p.id === currentDefault)));
+  }, [showDefaultModelSelectForProvider]);
+
+  const showResumeSelect = useCallback(() => {
+    const sessions = sessionManager.listForWorkspace();
+    if (sessions.length === 0) {
+      dispatch({ type: "APPEND_SYSTEM", id: `sys-${Date.now()}`, text: "No sessions found for this workspace." });
+      return;
+    }
+    function timeAgo(ms: number): string {
+      const secs = Math.floor((Date.now() - ms) / 1000);
+      if (secs < 60) return `${secs}s ago`;
+      const mins = Math.floor(secs / 60);
+      if (mins < 60) return `${mins}m ago`;
+      const hrs = Math.floor(mins / 60);
+      if (hrs < 24) return `${hrs}h ago`;
+      return `${Math.floor(hrs / 24)}d ago`;
+    }
+    setSelectionMode({
+      title: "Resume session",
+      items: sessions.map((s) => ({
+        value: s.id,
+        label: `${(s.name || "(unnamed)").slice(0, 28).padEnd(28)}  ${String(s.messageCount).padStart(3)} msg  ${timeAgo(s.updatedAt).padStart(8)}  ${s.id.slice(0, 8)}`,
+      })),
+      onSelect: (sessionId) => {
+        setSelectionMode(null);
+        resumeSessionRef.current(sessionId);
+      },
+    });
+    setSelectionIndex(0);
+  }, [dispatch]);
+
+  const showAgents = useCallback(() => {
+    const agents = loadAgents();
+    const items = [
+      ...agents.map((a) => ({
+        value: `agent:${a.name}`,
+        label: `${a.source === "project" ? "⊙" : "✎"} ${a.name.padEnd(20)}  ${a.description.slice(0, 40)}`,
+      })),
+      { value: "new", label: "＋ Create new agent" },
+    ];
+    setSelectionMode({
+      title: "Agents",
+      items,
+      onSelect: (value) => {
+        setSelectionMode(null);
+        if (value === "new") {
+          setAgentCreatorOpen(true);
+          return;
+        }
+        // Show agent actions
+        const agentName = value.replace(/^agent:/, "");
+        const agent = loadAgents().find((a) => a.name === agentName);
+        if (!agent) return;
+        const actionItems = [
+          { value: "view", label: `View agent "${agent.name}"` },
+          { value: "edit", label: `Edit agent "${agent.name}"` },
+          { value: "use", label: `Use @${agent.name} by prefixing messages` },
+          { value: "delete", label: `Delete agent "${agent.name}"` },
+          { value: "cancel", label: "Cancel" },
+        ];
+        setSelectionMode({
+          title: `Agent: ${agent.name}`,
+          items: actionItems,
+          onSelect: (action) => {
+            setSelectionMode(null);
+            if (action === "view") {
+              setAgentViewerTarget(agent);
+            } else if (action === "edit") {
+              setAgentEditorTarget(agent);
+            } else if (action === "delete") {
+              try {
+                deleteAgent(agent.filePath);
+                dispatch({ type: "APPEND_SYSTEM", id: `sys-${Date.now()}`, text: `Deleted agent "${agent.name}".` });
+              } catch (err) {
+                dispatch({ type: "APPEND_SYSTEM", id: `sys-${Date.now()}`, text: `Failed to delete: ${err instanceof Error ? err.message : String(err)}` });
+              }
+            } else if (action === "use") {
+              dispatch({ type: "APPEND_SYSTEM", id: `sys-${Date.now()}`, text: `To use this agent, prefix your message with @${agent.name}` });
+            }
+          },
+        });
+        setSelectionIndex(0);
+      },
+    });
+    setSelectionIndex(0);
+  }, [dispatch]);
+
+  const contextWindow = useMemo(() => {
+    const provider = sessionProvider ?? modelLabel.split(":")[0] ?? "deepseek";
+    const model = sessionModel ?? (modelLabel.split(":").slice(1).join(":") || getProviderModel(normalizeProviderName(provider) ?? "deepseek"));
+    return getContextWindow(model, provider);
+  }, [sessionProvider, sessionModel, modelLabel]);
   const prevLenRef = useRef(0);
   const tokensRef = useRef(0);
   const workspaceFiles = useRef<string[]>([]);
-  const inputHistoryRef = useRef<string[]>([]);
-  const historyIndexRef = useRef(-1);
 
   useEffect(() => {
     workspaceFiles.current = loadWorkspaceFiles();
-    inputHistoryRef.current = loadHistory();
+  }, []);
+
+  useEffect(() => {
+    void getDefaultProvider().then((provider) => {
+      setModelLabel(`${provider.name}:${getProviderModel(provider.name)}`);
+    });
   }, []);
 
   useEffect(() => { tokensRef.current = tokens; }, [tokens]);
 
-  const onHistoryUp = useCallback(() => {
-    const history = inputHistoryRef.current;
-    if (history.length === 0) return;
-    const nextIdx = Math.min(historyIndexRef.current + 1, history.length - 1);
-    historyIndexRef.current = nextIdx;
-    setInputValue(history[nextIdx]);
-  }, []);
+  const displayLabel = useMemo(() => {
+    if (sessionProvider && sessionModel) return `${sessionProvider}:${sessionModel}`;
+    if (sessionProvider) return `${sessionProvider}:${getProviderModel(normalizeProviderName(sessionProvider) ?? "deepseek")}`;
+    if (sessionModel) return `${modelLabel.split(":")[0]}:${sessionModel}`;
+    return modelLabel;
+  }, [sessionProvider, sessionModel, modelLabel]);
 
-  const onHistoryDown = useCallback(() => {
-    const nextIdx = historyIndexRef.current - 1;
-    if (nextIdx < 0) {
-      historyIndexRef.current = -1;
-      setInputValue("");
-    } else {
-      historyIndexRef.current = nextIdx;
-      setInputValue(inputHistoryRef.current[nextIdx]);
-    }
-  }, []);
 
-  // Last turn entry (live or completed)
   const lastTurn = useMemo(() => {
     for (let i = feedState.entries.length - 1; i >= 0; i--) {
       const e = feedState.entries[i];
@@ -132,10 +326,18 @@ export function App() {
   const expandableIds = useMemo(() => {
     if (!lastTurn || lastTurn.kind !== "turn") return [];
     const ids: string[] = [];
-    for (const tc of lastTurn.toolCalls) {
-      if (tc.status !== "running") ids.push(tc.id);
+    for (const ev of lastTurn.events) {
+      if (ev.kind === "tool" && ev.card.status !== "running") ids.push(ev.card.id);
     }
-    if (lastTurn.thinking.text) ids.push(`${lastTurn.id}-thinking`);
+    for (const ev of lastTurn.events) {
+      if (ev.kind === "thinking" && ev.text) ids.push(ev.id);
+    }
+    for (const ev of lastTurn.events) {
+      if (ev.kind === "worker" && ev.card.status !== "running") ids.push(ev.card.id);
+    }
+    for (const ev of lastTurn.events) {
+      if (ev.kind === "subagent" && ev.card.status !== "running") ids.push(ev.card.id);
+    }
     return ids;
   }, [lastTurn]);
 
@@ -146,7 +348,17 @@ export function App() {
   const safeFocusIndex = Math.min(navFocusIndex, Math.max(0, expandableIds.length - 1));
   const focusedId      = expandableIds[safeFocusIndex] ?? null;
 
-  // Slash command suggestions (when input starts with /)
+  // Get the focused event to check if it's a navigable session
+  const focusedEvent = useMemo(() => {
+    if (!lastTurn || lastTurn.kind !== "turn" || !focusedId) return null;
+    for (const ev of lastTurn.events) {
+      if ((ev.kind === "worker" || ev.kind === "subagent") && ev.card.id === focusedId) {
+        return ev;
+      }
+    }
+    return null;
+  }, [lastTurn, focusedId]);
+
   const slashSuggestions = useMemo((): Suggestion[] => {
     if (!inputValue.startsWith("/")) return [];
     const partial = inputValue.toLowerCase();
@@ -155,7 +367,6 @@ export function App() {
       .map((c) => ({ label: c.name, description: c.description }));
   }, [inputValue]);
 
-  // @mention file suggestions (triggered by @ in the last word)
   const mentionSuggestions = useMemo((): Suggestion[] => {
     const atMatch = inputValue.match(/@([\w./\\-]*)$/);
     if (!atMatch) return [];
@@ -170,25 +381,101 @@ export function App() {
     slashSuggestions.length > 0 ? slashSuggestions :
     mentionSuggestions.length > 0 ? mentionSuggestions : [];
 
-  // Reset suggestion index when suggestion list changes
   useEffect(() => {
     setSuggestionIndex(activeSuggestions.length > 0 ? 0 : -1);
   }, [activeSuggestions.length]);
 
+  const currentSession = sessionManager.getCurrent();
+
+  const { submit, clearHistory, loadSession, pendingApproval, respondToApproval } = useAgentStream({
+    dispatch,
+    onTokensUpdate: setTokens,
+    initialMessages: currentSession?.messages,
+    providerName: sessionProvider ?? undefined,
+    modelName: sessionModel ?? undefined,
+    executionMode,
+    approvalPolicy,
+  });
+
   useInput((_input, key) => {
     if (key.ctrl && _input === "c") exit();
 
-    // Escape: cancel in-progress stream, or dismiss suggestions
-    if (key.escape) {
-      if (feedState.processing) {
-        cancel();
+    if (pendingApproval) {
+      const input = _input.toLowerCase();
+      if (input === "a") {
+        void respondToApproval("approve");
         return;
       }
+      if (input === "s") {
+        void respondToApproval("approve_session");
+        return;
+      }
+      if (input === "d" || key.escape) {
+        void respondToApproval("deny");
+        return;
+      }
+      return;
+    }
+
+    // Session view mode: Esc or q exits
+    if (sessionViewId) {
+      if (key.escape || _input === "q") {
+        setSessionViewId(null);
+        return;
+      }
+      return;
+    }
+
+    // Selection mode intercepts all navigation and confirm/cancel
+    if (selectionMode) {
+      if (key.escape) {
+        setSelectionMode(null);
+        setInputValue("");
+        setSuggestionIndex(-1);
+        return;
+      }
+      if (key.upArrow) {
+        if (selectionMode.items.length > 0)
+          setSelectionIndex((i) => i <= 0 ? selectionMode.items.length - 1 : i - 1);
+        return;
+      }
+      if (key.downArrow) {
+        if (selectionMode.items.length > 0)
+          setSelectionIndex((i) => (i + 1) % selectionMode.items.length);
+        return;
+      }
+      if (key.return) {
+        const item = selectionMode.items[selectionIndex];
+        if (item) selectionMode.onSelect(item.value);
+        return;
+      }
+      return;
+    }
+
+    if (key.escape) {
+      setInputValue("");
       setSuggestionIndex(-1);
       return;
     }
 
-    // Tab: suggestions take priority over navigation
+    if (key.upArrow) {
+      if (activeSuggestions.length > 0) {
+        setSuggestionIndex((i) =>
+          i <= 0 ? activeSuggestions.length - 1 : i - 1
+        );
+        return;
+      }
+    }
+
+    if (key.downArrow) {
+      if (activeSuggestions.length > 0) {
+        setSuggestionIndex((i) =>
+          i < 0 ? 0 : (i + 1) % activeSuggestions.length
+        );
+        return;
+      }
+    }
+
     if (key.tab) {
       if (activeSuggestions.length > 0) {
         setSuggestionIndex((i) =>
@@ -202,9 +489,15 @@ export function App() {
       return;
     }
 
-    // Space: expand/collapse focused expandable when input is empty
     if (_input === " " && inputValue === "" && focusedId !== null) {
       dispatch({ type: "TOGGLE_EXPANDED", id: focusedId });
+      return;
+    }
+
+    if (key.return && focusedEvent && inputValue === "") {
+      // Enter on a worker/subagent enters its session view
+      const sessionId = focusedEvent.card.sessionId;
+      if (sessionId) setSessionViewId(sessionId);
       return;
     }
   });
@@ -213,7 +506,6 @@ export function App() {
     if (val.includes("\t")) return;
     if (val === " " && inputValue === "" && focusedId !== null) return;
 
-    // Detect large paste: input grew by more than 30 chars in one event
     const delta = val.length - prevLenRef.current;
     if (delta > 30) setIsPastePreviewed(true);
     if (val.length < prevLenRef.current) setIsPastePreviewed(false);
@@ -223,15 +515,6 @@ export function App() {
     setSuggestionIndex(activeSuggestions.length > 0 ? 0 : -1);
   }
 
-  const currentSession = sessionManager.getCurrent();
-
-  const { submit, clearHistory, loadSession, cancel } = useAgentStream({
-    dispatch,
-    onTokensUpdate: setTokens,
-    initialMessages: currentSession?.messages,
-  });
-
-  // On mount: if resuming a session, show a banner
   useEffect(() => {
     if (currentSession && currentSession.messages.length > 0) {
       const name = currentSession.name || "(unnamed)";
@@ -251,23 +534,29 @@ export function App() {
         dispatch({ type: "APPEND_SYSTEM", id: `err-${Date.now()}`, text: "Session not found." });
         return;
       }
-      loadSession(msgs as Array<{ role: string; content: string }>);
-      dispatch({ type: "CLEAR_FEED" });
+      loadSession(msgs as Array<{ role: string; content: string; reasoning_content?: string }>);
+      dispatch({ type: "LOAD_HISTORY", messages: msgs });
       const sess = sessionManager.getCurrent();
       const name = sess?.name || "(unnamed)";
       dispatch({
         type: "APPEND_SYSTEM",
         id:   `resumed-${Date.now()}`,
-        text: `Resumed: ${name} (${msgs.length} messages)`,
+        text: `↩ Resumed: ${name}`,
       });
     },
     [loadSession, dispatch],
   );
 
+  const resumeSessionRef = useRef(onResumeSession);
+  useEffect(() => { resumeSessionRef.current = onResumeSession; }, [onResumeSession]);
+
   const onNewSession = useCallback(() => {
     sessionManager.createSession();
     clearHistory();
     dispatch({ type: "CLEAR_FEED" });
+    setSessionProvider(null);
+    setSessionModel(null);
+    setModelLabel(getProviderLabel());
   }, [clearHistory, dispatch]);
 
   const handleSubmit = useCallback(
@@ -276,56 +565,54 @@ export function App() {
       const trimmed = text.trim();
       if (!trimmed) return;
 
-      // If a suggestion is selected and Enter is pressed, autocomplete instead of submit
       if (suggestionIndex >= 0 && activeSuggestions.length > 0) {
         const selected = activeSuggestions[suggestionIndex];
         if (slashSuggestions.length > 0) {
           setInputValue(selected.label + " ");
         } else {
-          // @mention: replace trailing @... with the selected file
           setInputValue((v) => v.replace(/@([\w./\\-]*)$/, `@${selected.label} `));
         }
         setSuggestionIndex(-1);
+        setInputKey((k) => k + 1);
         return;
       }
-
-      // Push to input history (deduplicate at top)
-      const history = inputHistoryRef.current;
-      if (history[0] !== trimmed) {
-        history.unshift(trimmed);
-        if (history.length > HISTORY_MAX) history.length = HISTORY_MAX;
-        saveHistory(history);
-      }
-      historyIndexRef.current = -1;
 
       setInputValue("");
       setSuggestionIndex(-1);
       setIsPastePreviewed(false);
       prevLenRef.current = 0;
 
-      // Intercept slash commands
       const handled = handleSlashCommand(trimmed, {
         dispatch,
         clearHistory,
         getTokens: () => tokensRef.current,
-        getModel: () => MODEL_NAME,
-        getCost: () => ({
-          totalCost: feedState.totalCost,
-          totalInputTokens: feedState.totalInputTokens,
-          totalOutputTokens: feedState.totalOutputTokens,
-        }),
-        getFeedEntries: () => feedState.entries,
+        getModel: () => displayLabel,
         exit,
         onResumeSession,
         onNewSession,
+        launchWizard: (mode) => setWizardMode(mode),
+        showModelSelect: () => {
+          const provider = sessionProvider ?? displayLabel.split(":")[0];
+          showModelSelectForProvider(provider);
+        },
+        showProviderSelect: () => {
+          const provider = sessionProvider ?? displayLabel.split(":")[0];
+          showProviderSelect(provider);
+        },
+        showResumeSelect,
+        showDefaultModelSelect: showDefaultProviderSelect,
+        showAgents,
+        getExecutionMode: () => executionMode,
+        setExecutionMode,
+        getApprovalPolicy: () => approvalPolicy,
+        setApprovalPolicy,
       });
       if (handled) return;
 
-      // Expand @mentions to file content before sending
       const expanded = expandMentions(trimmed, workspaceFiles.current);
       await submit(expanded);
     },
-    [submit, clearHistory, feedState.processing, exit, suggestionIndex, activeSuggestions, slashSuggestions, onResumeSession, onNewSession]
+    [submit, clearHistory, feedState.processing, exit, suggestionIndex, activeSuggestions, slashSuggestions, onResumeSession, onNewSession, displayLabel, sessionProvider, sessionModel, executionMode, approvalPolicy, showModelSelectForProvider, showProviderSelect, showResumeSelect, showDefaultProviderSelect, showAgents]
   );
 
   const agentState: AgentState = (() => {
@@ -333,12 +620,124 @@ export function App() {
     for (let i = feedState.entries.length - 1; i >= 0; i--) {
       const e = feedState.entries[i];
       if (e.kind === "turn" && !e.done) {
-        const hasRunningTool = e.toolCalls.some((tc) => tc.status === "running");
+        const hasRunningTool = e.events.some(
+          (ev) => ev.kind === "tool" && ev.card.status === "running"
+        );
         return hasRunningTool ? "tool" : "thinking";
       }
     }
     return "thinking";
   })();
+
+  // Session view mode
+  if (sessionViewId) {
+    const session = feedState.sessions[sessionViewId];
+    if (session) {
+      return (
+        <Box flexDirection="column" height="100%">
+          <SessionView session={session} onBack={() => setSessionViewId(null)} />
+          <StatusBar
+            modelLabel={displayLabel}
+            tokens={tokens}
+            agentState={agentState}
+            sessionName={sessionManager.getCurrent()?.name}
+            maxTokens={contextWindow}
+          />
+        </Box>
+      );
+    }
+    setSessionViewId(null);
+  }
+
+  if (agentCreatorOpen) {
+    return (
+      <Box flexDirection="column" height="100%">
+        <AgentCreator
+          onDone={(msg) => {
+            setAgentCreatorOpen(false);
+            dispatch({ type: "APPEND_SYSTEM", id: `sys-${Date.now()}`, text: msg });
+          }}
+          onCancel={() => setAgentCreatorOpen(false)}
+        />
+        <StatusBar
+          modelLabel={displayLabel}
+          tokens={tokens}
+          agentState="idle"
+          sessionName={sessionManager.getCurrent()?.name}
+          maxTokens={contextWindow}
+        />
+      </Box>
+    );
+  }
+
+  if (agentEditorTarget) {
+    return (
+      <Box flexDirection="column" height="100%">
+        <AgentCreator
+          initialAgent={agentEditorTarget}
+          onDone={(msg) => {
+            setAgentEditorTarget(null);
+            dispatch({ type: "APPEND_SYSTEM", id: `sys-${Date.now()}`, text: msg });
+          }}
+          onCancel={() => setAgentEditorTarget(null)}
+        />
+        <StatusBar
+          modelLabel={displayLabel}
+          tokens={tokens}
+          agentState="idle"
+          sessionName={sessionManager.getCurrent()?.name}
+          maxTokens={contextWindow}
+        />
+      </Box>
+    );
+  }
+
+  if (agentViewerTarget) {
+    return (
+      <Box flexDirection="column" height="100%">
+        <AgentViewer agent={agentViewerTarget} onBack={() => setAgentViewerTarget(null)} />
+        <StatusBar
+          modelLabel={displayLabel}
+          tokens={tokens}
+          agentState="idle"
+          sessionName={sessionManager.getCurrent()?.name}
+          maxTokens={contextWindow}
+        />
+      </Box>
+    );
+  }
+
+  if (wizardMode === "add-provider") {
+    return (
+      <SettingsWizard
+        initialSettings={loadSettings()}
+        onSubmit={(settings) => {
+          const existing = loadSettings();
+          const merged: ChorusSettings = {
+            ...existing,
+            llm: {
+              ...existing.llm,
+              provider: settings.llm?.provider ?? existing.llm?.provider,
+              providers: {
+                ...existing.llm?.providers,
+                ...settings.llm?.providers,
+              },
+            },
+          };
+          saveSettings(merged);
+          clearSettingsCache();
+          resetDefaultProvider();
+          setModelLabel(getProviderLabel());
+          setWizardMode(null);
+          dispatch({
+            type: "APPEND_SYSTEM",
+            id: `provider-added-${Date.now()}`,
+            text: `Provider configured: ${settings.llm?.provider ?? "unknown"} · model ${settings.llm?.provider ? settings.llm.providers?.[settings.llm.provider]?.model ?? "unknown" : "unknown"}`,
+          });
+        }}
+      />
+    );
+  }
 
   return (
     <Box flexDirection="column" height="100%">
@@ -348,23 +747,42 @@ export function App() {
         onToggle={(id) => dispatch({ type: "TOGGLE_EXPANDED", id })}
         focusedId={focusedId}
       />
-      {activeSuggestions.length > 0 && (
-        <SuggestionBox
-          suggestions={activeSuggestions}
-          selectedIndex={suggestionIndex}
+      {pendingApproval ? (
+        <ApprovalCard approval={pendingApproval} />
+      ) : selectionMode ? (
+        <SelectBox
+          title={selectionMode.title}
+          items={selectionMode.items}
+          selectedIndex={selectionIndex}
         />
+      ) : (
+        <>
+          {activeSuggestions.length > 0 && (
+            <SuggestionBox
+              suggestions={activeSuggestions}
+              selectedIndex={suggestionIndex}
+            />
+          )}
+          <InputBox
+            value={inputValue}
+            onChange={handleInputChange}
+            onSubmit={handleSubmit}
+            disabled={feedState.processing}
+            isPastePreviewed={isPastePreviewed}
+            onDismissPaste={() => setIsPastePreviewed(false)}
+            resetKey={inputKey}
+          />
+        </>
       )}
-      <InputBox
-        value={inputValue}
-        onChange={handleInputChange}
-        onSubmit={handleSubmit}
-        disabled={feedState.processing}
-        isPastePreviewed={isPastePreviewed}
-        onDismissPaste={() => setIsPastePreviewed(false)}
-        onHistoryUp={onHistoryUp}
-        onHistoryDown={onHistoryDown}
+      <StatusBar
+        modelLabel={displayLabel}
+        tokens={tokens}
+        agentState={agentState}
+        sessionName={sessionManager.getCurrent()?.name}
+        maxTokens={contextWindow}
+        executionMode={executionMode}
+        approvalPolicy={approvalPolicy}
       />
-      <StatusBar tokens={tokens} agentState={agentState} sessionName={sessionManager.getCurrent()?.name} totalCost={feedState.totalCost} />
     </Box>
   );
 }

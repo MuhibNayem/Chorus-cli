@@ -1,6 +1,7 @@
 export interface SessionMessage {
   role: string;
   content: string;
+  reasoning_content?: string;
 }
 
 export interface SessionMetadata {

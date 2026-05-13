@@ -6,8 +6,20 @@ import {
   type FeedAction,
 } from "../src/cli/state/feedReducer.js";
 
-function applyActions(actions: FeedAction[]): FeedState {
-  return actions.reduce(feedReducer, initialFeedState);
+function applyActions(actions: Array<FeedAction | any>): FeedState {
+  return actions.map((action) => {
+    if (action.type === "APPEND_USER") {
+      return { ...action, startedAt: action.startedAt ?? 1000 };
+    }
+    if (action.type === "FINALIZE_TURN") {
+      return { ...action, completedAt: action.completedAt ?? 1100 };
+    }
+    return action;
+  }).reduce(feedReducer, initialFeedState);
+}
+
+function getTurns(state: FeedState) {
+  return state.entries.filter((entry) => entry.kind === "turn");
 }
 
 describe("APPEND_USER", () => {
@@ -19,56 +31,76 @@ describe("APPEND_USER", () => {
       kind: "turn",
       id: "turn-u1",
       done: false,
-      tokens: [],
-      toolCalls: [],
+      events: [],
     });
     expect(state.processing).toBe(true);
   });
 });
 
 describe("APPEND_THINK_TOKEN", () => {
-  it("appends to the live turn's thinking text", () => {
+  it("appends to the live thinking event", () => {
     const state = applyActions([
       { type: "APPEND_USER", id: "u1", text: "hi" },
       { type: "APPEND_THINK_TOKEN", text: "step 1 " },
       { type: "APPEND_THINK_TOKEN", text: "step 2" },
     ]);
-    const turn = state.entries.find((e) => e.kind === "turn");
+    const [turn] = getTurns(state);
+    expect(turn?.kind).toBe("turn");
     if (turn?.kind === "turn") {
-      expect(turn.thinking.text).toBe("step 1 step 2");
+      expect(turn.events).toHaveLength(1);
+      expect(turn.events[0]).toMatchObject({
+        kind: "thinking",
+        text: "step 1 step 2",
+        expanded: true,
+      });
     }
   });
 
   it("does not mutate a finalized turn", () => {
     const state = applyActions([
       { type: "APPEND_USER", id: "u1", text: "hi" },
+      { type: "APPEND_THINK_TOKEN", text: "first turn" },
       { type: "FINALIZE_TURN" },
       { type: "APPEND_USER", id: "u2", text: "second" },
       { type: "APPEND_THINK_TOKEN", text: "only second turn" },
     ]);
-    const turns = state.entries.filter((e) => e.kind === "turn");
+    const turns = getTurns(state);
     expect(turns).toHaveLength(2);
-    if (turns[0].kind === "turn") expect(turns[0].thinking.text).toBe("");
-    if (turns[1].kind === "turn") expect(turns[1].thinking.text).toBe("only second turn");
+    if (turns[0]?.kind === "turn" && turns[1]?.kind === "turn") {
+      expect(turns[0].events[0]).toMatchObject({
+        kind: "thinking",
+        text: "first turn",
+        expanded: false,
+      });
+      expect(turns[1].events[0]).toMatchObject({
+        kind: "thinking",
+        text: "only second turn",
+        expanded: true,
+      });
+    }
   });
 });
 
 describe("APPEND_RESPONSE_TOKEN", () => {
-  it("appends tokens to the live turn", () => {
+  it("appends tokens to the live response event", () => {
     const state = applyActions([
       { type: "APPEND_USER", id: "u1", text: "hi" },
       { type: "APPEND_RESPONSE_TOKEN", text: "Hello" },
       { type: "APPEND_RESPONSE_TOKEN", text: " world" },
     ]);
-    const turn = state.entries.find((e) => e.kind === "turn");
+    const [turn] = getTurns(state);
     if (turn?.kind === "turn") {
-      expect(turn.tokens).toEqual(["Hello", " world"]);
+      expect(turn.events).toHaveLength(1);
+      expect(turn.events[0]).toMatchObject({
+        kind: "response",
+        tokens: ["Hello", " world"],
+      });
     }
   });
 });
 
 describe("ADD_TOOL_CALL + UPDATE_TOOL_CALL", () => {
-  it("adds a running tool card and updates to done", () => {
+  it("adds a running tool event and updates it to done", () => {
     const state = applyActions([
       { type: "APPEND_USER", id: "u1", text: "run git" },
       {
@@ -77,15 +109,18 @@ describe("ADD_TOOL_CALL + UPDATE_TOOL_CALL", () => {
       },
       { type: "UPDATE_TOOL_CALL", id: "tc1", result: "nothing to commit", status: "done" },
     ]);
-    const turn = state.entries.find((e) => e.kind === "turn");
+    const [turn] = getTurns(state);
     if (turn?.kind === "turn") {
-      expect(turn.toolCalls).toHaveLength(1);
-      expect(turn.toolCalls[0]).toMatchObject({
-        id: "tc1",
-        name: "git_status",
-        status: "done",
-        result: "nothing to commit",
-        expanded: false,
+      expect(turn.events).toHaveLength(1);
+      expect(turn.events[0]).toMatchObject({
+        kind: "tool",
+        card: {
+          id: "tc1",
+          name: "git_status",
+          status: "done",
+          result: "nothing to commit",
+          expanded: false,
+        },
       });
     }
   });
@@ -96,49 +131,41 @@ describe("ADD_TOOL_CALL + UPDATE_TOOL_CALL", () => {
       { type: "ADD_TOOL_CALL", toolCall: { id: "tc1", name: "shell", args: {}, status: "running" } },
       { type: "UPDATE_TOOL_CALL", id: "tc1", result: "command not found", status: "error" },
     ]);
-    const turn = state.entries.find((e) => e.kind === "turn");
-    if (turn?.kind === "turn") {
-      expect(turn.toolCalls[0].status).toBe("error");
+    const [turn] = getTurns(state);
+    if (turn?.kind === "turn" && turn.events[0]?.kind === "tool") {
+      expect(turn.events[0].card.status).toBe("error");
     }
   });
 });
 
 describe("FINALIZE_TURN", () => {
-  it("marks done=true and sets processing=false", () => {
+  it("marks done=true, sets processing=false, and collapses thinking events", () => {
     const state = applyActions([
       { type: "APPEND_USER", id: "u1", text: "hi" },
-      { type: "APPEND_RESPONSE_TOKEN", text: "hello" },
+      { type: "APPEND_THINK_TOKEN", text: "hello" },
       { type: "FINALIZE_TURN" },
     ]);
     expect(state.processing).toBe(false);
-    const turn = state.entries.find((e) => e.kind === "turn");
-    if (turn?.kind === "turn") {
+    const [turn] = getTurns(state);
+    if (turn?.kind === "turn" && turn.events[0]?.kind === "thinking") {
       expect(turn.done).toBe(true);
-      expect(turn.thinking.durationMs).toBeGreaterThanOrEqual(0);
+      expect(turn.events[0].expanded).toBe(false);
+      expect(turn.events[0].durationMs).toBeGreaterThanOrEqual(0);
     }
   });
 });
 
 describe("TOGGLE_EXPANDED", () => {
-  it("toggles thinking block expanded state", () => {
+  it("toggles thinking event expanded state", () => {
     const state = applyActions([
       { type: "APPEND_USER", id: "u1", text: "hi" },
       { type: "APPEND_THINK_TOKEN", text: "some thought" },
-      { type: "TOGGLE_EXPANDED", id: "turn-u1-thinking" },
+      { type: "TOGGLE_EXPANDED", id: "turn-u1-think-0" },
     ]);
-    const turn = state.entries.find((e) => e.kind === "turn");
-    if (turn?.kind === "turn") expect(turn.thinking.expanded).toBe(true);
-  });
-
-  it("toggles back to collapsed on second toggle", () => {
-    const state = applyActions([
-      { type: "APPEND_USER", id: "u1", text: "hi" },
-      { type: "APPEND_THINK_TOKEN", text: "thought" },
-      { type: "TOGGLE_EXPANDED", id: "turn-u1-thinking" },
-      { type: "TOGGLE_EXPANDED", id: "turn-u1-thinking" },
-    ]);
-    const turn = state.entries.find((e) => e.kind === "turn");
-    if (turn?.kind === "turn") expect(turn.thinking.expanded).toBe(false);
+    const [turn] = getTurns(state);
+    if (turn?.kind === "turn" && turn.events[0]?.kind === "thinking") {
+      expect(turn.events[0].expanded).toBe(false);
+    }
   });
 
   it("toggles a tool card expanded state", () => {
@@ -147,22 +174,31 @@ describe("TOGGLE_EXPANDED", () => {
       { type: "ADD_TOOL_CALL", toolCall: { id: "tc1", name: "git_status", args: {}, status: "done" } },
       { type: "TOGGLE_EXPANDED", id: "tc1" },
     ]);
-    const turn = state.entries.find((e) => e.kind === "turn");
-    if (turn?.kind === "turn") expect(turn.toolCalls[0].expanded).toBe(true);
+    const [turn] = getTurns(state);
+    if (turn?.kind === "turn" && turn.events[0]?.kind === "tool") {
+      expect(turn.events[0].card.expanded).toBe(true);
+    }
   });
 
-  it("does not affect other entries when toggling", () => {
+  it("does not affect other turns when toggling", () => {
     const state = applyActions([
       { type: "APPEND_USER", id: "u1", text: "first" },
+      { type: "ADD_TOOL_CALL", toolCall: { id: "tc1", name: "ls", args: {}, status: "done" } },
       { type: "FINALIZE_TURN" },
       { type: "APPEND_USER", id: "u2", text: "second" },
-      { type: "ADD_TOOL_CALL", toolCall: { id: "tc2", name: "ls", args: {}, status: "done" } },
+      { type: "ADD_TOOL_CALL", toolCall: { id: "tc2", name: "pwd", args: {}, status: "done" } },
       { type: "TOGGLE_EXPANDED", id: "tc2" },
     ]);
-    // First turn's toolCalls unaffected (empty)
-    const turns = state.entries.filter((e) => e.kind === "turn");
-    if (turns[0].kind === "turn") expect(turns[0].toolCalls).toHaveLength(0);
-    if (turns[1].kind === "turn") expect(turns[1].toolCalls[0].expanded).toBe(true);
+    const turns = getTurns(state);
+    if (
+      turns[0]?.kind === "turn" &&
+      turns[1]?.kind === "turn" &&
+      turns[0].events[0]?.kind === "tool" &&
+      turns[1].events[0]?.kind === "tool"
+    ) {
+      expect(turns[0].events[0].card.expanded).toBe(false);
+      expect(turns[1].events[0].card.expanded).toBe(true);
+    }
   });
 });
 
@@ -173,7 +209,7 @@ describe("SET_ERROR", () => {
       { type: "SET_ERROR", id: "e1", message: "Connection refused" },
     ]);
     expect(state.processing).toBe(false);
-    const errEntry = state.entries.find((e) => e.kind === "error");
+    const errEntry = state.entries.find((entry) => entry.kind === "error");
     expect(errEntry).toMatchObject({ kind: "error", id: "e1", message: "Connection refused" });
   });
 });

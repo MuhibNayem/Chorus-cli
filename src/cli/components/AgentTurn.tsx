@@ -2,6 +2,8 @@ import { Box, Text } from "ink";
 import type { FeedEntry } from "../state/feedReducer.js";
 import { ThinkingBlock } from "./ThinkingBlock.js";
 import { ToolCard } from "./ToolCard.js";
+import { WorkerCard } from "./WorkerCard.js";
+import { SubagentCard } from "./SubagentCard.js";
 import { useCursor } from "../hooks/useSpinner.js";
 
 type TurnEntry = Extract<FeedEntry, { kind: "turn" }>;
@@ -13,51 +15,103 @@ interface AgentTurnProps {
   focusedId?: string | null;
 }
 
-export function AgentTurn({ entry, onToggle: _onToggle, isLive = false, focusedId = null }: AgentTurnProps) {
+export function AgentTurn({ entry, onToggle, isLive = false, focusedId = null }: AgentTurnProps) {
+  // Collect expandable item ids in stream order
   const expandableIds: string[] = [];
-  for (const tc of entry.toolCalls) {
-    if (tc.status !== "running") expandableIds.push(tc.id);
+  for (const ev of entry.events) {
+    if (ev.kind === "tool" && ev.card.status !== "running") expandableIds.push(ev.card.id);
   }
-  if (entry.thinking.text) expandableIds.push(`${entry.id}-thinking`);
+  for (const ev of entry.events) {
+    if (ev.kind === "thinking" && ev.text) expandableIds.push(ev.id);
+  }
+  for (const ev of entry.events) {
+    if (ev.kind === "worker" && ev.card.status !== "running") expandableIds.push(ev.card.id);
+  }
+  for (const ev of entry.events) {
+    if (ev.kind === "subagent" && ev.card.status !== "running") expandableIds.push(ev.card.id);
+  }
 
-  const responseText = entry.tokens.join("");
-  const isStreamingResponse = !entry.done && responseText.length > 0;
+  // Determine which event is currently "active" (being streamed right now)
+  const lastEvent = entry.events[entry.events.length - 1];
+  const isLastThinkingActive = !entry.done && lastEvent?.kind === "thinking";
+  const isStreamingResponse = !entry.done && lastEvent?.kind === "response";
+
   const cursor = useCursor(isStreamingResponse);
-  const isThinkingActive = !entry.done && !isStreamingResponse && entry.toolCalls.every((tc) => tc.status !== "running");
 
   return (
     <Box flexDirection="column" marginBottom={1}>
+      {/* Turn header */}
       <Box flexDirection="row">
         <Text color="green" bold>{"● "}</Text>
         <Text color="grey" dimColor>{"agent"}</Text>
         {expandableIds.length > 0 && (
-          <Text color="grey" dimColor>{"  [Tab] cycle  [Space] expand"}</Text>
+          <Text color="grey" dimColor>{"  [Tab] cycle  [Space] expand  [Enter] view session"}</Text>
         )}
       </Box>
 
-      {entry.thinking.text && (
-        <ThinkingBlock
-          thinking={entry.thinking}
-          turnId={entry.id}
-          focused={focusedId === `${entry.id}-thinking`}
-          isActive={isThinkingActive}
-        />
-      )}
+      {/* Events in stream order */}
+      {entry.events.map((ev, i) => {
+        if (ev.kind === "thinking") {
+          const isActive = isLastThinkingActive && i === entry.events.length - 1;
+          return (
+            <ThinkingBlock
+              key={ev.id}
+              event={ev}
+              focused={focusedId === ev.id}
+              isActive={isActive}
+            />
+          );
+        }
 
-      {entry.toolCalls.map((tc) => (
-        <ToolCard key={tc.id} card={tc} focused={focusedId === tc.id} />
-      ))}
+        if (ev.kind === "tool") {
+          return (
+            <ToolCard
+              key={ev.card.id}
+              card={ev.card}
+              focused={focusedId === ev.card.id}
+            />
+          );
+        }
 
-      {responseText && (
-        <Box marginLeft={2}>
-          <Text wrap="wrap">
-            {responseText}
-            {isStreamingResponse ? cursor : ""}
-          </Text>
-        </Box>
-      )}
+        if (ev.kind === "worker") {
+          return (
+            <WorkerCard
+              key={ev.card.id}
+              card={ev.card}
+              focused={focusedId === ev.card.id}
+            />
+          );
+        }
 
-      {isLive && responseText.length === 0 && entry.toolCalls.length === 0 && !entry.thinking.text && (
+        if (ev.kind === "subagent") {
+          return (
+            <SubagentCard
+              key={ev.card.id}
+              card={ev.card}
+              focused={focusedId === ev.card.id}
+            />
+          );
+        }
+
+        if (ev.kind === "response") {
+          const text = ev.tokens.join("");
+          const isLastEvent = i === entry.events.length - 1;
+          if (!text) return null;
+          return (
+            <Box key={`resp-${i}`} marginLeft={2}>
+              <Text wrap="wrap">
+                {text}
+                {isStreamingResponse && isLastEvent ? cursor : ""}
+              </Text>
+            </Box>
+          );
+        }
+
+        return null;
+      })}
+
+      {/* Initial waiting indicator — nothing has streamed yet */}
+      {isLive && entry.events.length === 0 && (
         <WaitingIndicator />
       )}
     </Box>

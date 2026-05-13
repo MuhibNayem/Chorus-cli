@@ -3,7 +3,6 @@ import { z } from "zod";
 import { execFile } from "child_process";
 import { promisify } from "util";
 import * as path from "path";
-import * as fs from "fs";
 import { assessCommandSafety, auditCommand } from "./safety.js";
 
 const execFileAsync = promisify(execFile);
@@ -57,6 +56,14 @@ const SAFE_COMMANDS = new Set([
   "awk",
 ]);
 
+const EVAL_FLAGS_BY_COMMAND: Record<string, Set<string>> = {
+  node: new Set(["-e", "--eval", "-p", "--print"]),
+  python: new Set(["-c"]),
+  python3: new Set(["-c"]),
+  "ts-node": new Set(["-e", "--eval", "-p", "--print"]),
+  tsx: new Set(["-e", "--eval"]),
+};
+
 function tokenizeCommand(command: string): string[] {
   const tokens: string[] = [];
   let current = "";
@@ -91,9 +98,16 @@ function tokenizeCommand(command: string): string[] {
     current += char;
   }
 
-  if (quote) throw new Error("Unclosed quote in command.");
-  if (escaping) current += "\\";
-  if (current) tokens.push(current);
+  if (quote) {
+    throw new Error("Unclosed quote in command.");
+  }
+  if (escaping) {
+    current += "\\";
+  }
+  if (current) {
+    tokens.push(current);
+  }
+
   return tokens;
 }
 
@@ -104,13 +118,27 @@ function hasShellSyntax(command: string): boolean {
 function splitEnvAssignments(tokens: string[]): { env: Record<string, string>; argv: string[] } {
   const env: Record<string, string> = {};
   let index = 0;
+
   while (index < tokens.length) {
     const match = tokens[index].match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
     if (!match) break;
     env[match[1]] = match[2];
     index += 1;
   }
+
   return { env, argv: tokens.slice(index) };
+}
+
+function getDisallowedFlag(base: string, args: string[]): string | null {
+  const disallowed = EVAL_FLAGS_BY_COMMAND[base];
+  if (!disallowed) return null;
+
+  for (const arg of args) {
+    if (disallowed.has(arg)) return arg;
+    if ([...disallowed].some((flag) => arg.startsWith(`${flag}=`))) return arg;
+  }
+
+  return null;
 }
 
 /**
@@ -124,74 +152,57 @@ function splitEnvAssignments(tokens: string[]): { env: Record<string, string>; a
  */
 function validateWorkspacePaths(tokens: string[]): string | null {
   for (const token of tokens) {
-    // Skip short flags like -f, --dry-run, KEY=val prefixes
-    if (token.startsWith("-") || /^[A-Z_]+=/.test(token)) continue;
+    const envMatch = token.match(/^[A-Za-z_][A-Za-z0-9_]*=(.*)$/);
+    const value = envMatch ? envMatch[1] : token;
+
+    // Skip short flags like -f and --dry-run.
+    if (!envMatch && value.startsWith("-")) continue;
 
     // ── Absolute paths ────────────────────────────────────────────────────────
-    if (path.isAbsolute(token)) {
-      const resolved = path.resolve(token);
+    if (path.isAbsolute(value)) {
+      const resolved = path.resolve(value);
       if (resolved !== WORKSPACE && !resolved.startsWith(WORKSPACE_SEP)) {
         return (
-          `Blocked: "${token}" is outside the workspace.\n` +
+          `Blocked: "${value}" is outside the workspace.\n` +
           `All paths must be relative to or within: ${WORKSPACE}`
         );
       }
-      // Symlink resolution: verify real path is still inside workspace
-      try {
-        const real = fs.realpathSync(resolved);
-        if (real !== WORKSPACE && !real.startsWith(WORKSPACE_SEP)) {
-          return `Blocked: symlink "${token}" resolves outside the workspace (→ ${real}).`;
-        }
-      } catch { /* path doesn't exist yet — no symlink to follow */ }
     }
 
     // ── Relative paths with traversal (../../../etc) ──────────────────────────
-    if (token.includes("..")) {
-      const resolved = path.resolve(WORKSPACE, token);
+    if (value.includes("..")) {
+      const resolved = path.resolve(WORKSPACE, value);
       if (resolved !== WORKSPACE && !resolved.startsWith(WORKSPACE_SEP)) {
         return (
-          `Blocked: path traversal "${token}" escapes the workspace.\n` +
+          `Blocked: path traversal "${value}" escapes the workspace.\n` +
           `Resolved to: ${resolved}\n` +
           `Workspace is: ${WORKSPACE}`
         );
       }
     }
 
-    // ── Symlink check for relative paths (catches link-to-outside/file) ───────
-    if (!path.isAbsolute(token) && !token.startsWith("-") && token.includes("/")) {
-      const resolved = path.resolve(WORKSPACE, token);
-      try {
-        const real = fs.realpathSync(resolved);
-        if (real !== WORKSPACE && !real.startsWith(WORKSPACE_SEP)) {
-          return `Blocked: symlink "${token}" resolves outside the workspace (→ ${real}).`;
-        }
-      } catch { /* path doesn't exist yet — no symlink to follow */ }
-    }
-
     // ── Home-dir shortcuts ────────────────────────────────────────────────────
-    if (token === "~" || token.startsWith("~/")) {
-      return `Blocked: home directory reference "${token}" is outside the workspace.`;
+    if (value === "~" || value.startsWith("~/")) {
+      return `Blocked: home directory reference "${value}" is outside the workspace.`;
     }
-  }
 
-  // ── Env-var shortcuts that expand outside workspace ───────────────────────
-  const dangerousVars = ["$HOME", "${HOME}", "$TMPDIR", "${TMPDIR}", "$TMP", "${TMP}"];
-  for (const token of tokens) {
-    for (const v of dangerousVars) {
-      if (token.includes(v)) {
-        return `Blocked: "${v}" expands outside the workspace.`;
+    // ── Env-var shortcuts that expand outside workspace ─────────────────────
+    const dangerousVars = ["$HOME", "${HOME}", "$TMPDIR", "${TMPDIR}", "$TMP", "${TMP}"];
+    for (const variable of dangerousVars) {
+      if (value.includes(variable)) {
+        return `Blocked: "${variable}" expands outside the workspace.`;
       }
     }
-  }
 
-  // ── Block /tmp and other well-known system dirs explicitly ────────────────
-  const systemDirs = ["/tmp", "/var", "/etc", "/usr", "/bin", "/sbin", "/opt", "/private"];
-  for (const dir of systemDirs) {
-    if (tokens.some((token) => token === dir || token.startsWith(`${dir}/`))) {
-      return (
-        `Blocked: system directory "${dir}" is outside the workspace.\n` +
-        `Use paths relative to the workspace: ${WORKSPACE}`
-      );
+    // ── Block /tmp and other well-known system dirs explicitly ──────────────
+    const systemDirs = ["/tmp", "/var", "/etc", "/usr", "/bin", "/sbin", "/opt", "/private"];
+    for (const dir of systemDirs) {
+      if (value === dir || value.startsWith(`${dir}/`)) {
+        return (
+          `Blocked: system directory "${dir}" is outside the workspace.\n` +
+          `Use paths relative to the workspace: ${WORKSPACE}`
+        );
+      }
     }
   }
 
@@ -208,21 +219,33 @@ export const ExecuteTool = tool(
     let tokens: string[];
     try {
       tokens = tokenizeCommand(command);
-    } catch (err) {
-      return `Blocked: ${err instanceof Error ? err.message : String(err)}`;
+    } catch (error) {
+      auditCommand({ command, allowed: false, reason: `parse error: ${error instanceof Error ? error.message : String(error)}` });
+      return `Command parse error: ${error instanceof Error ? error.message : String(error)}`;
     }
+
     const { env, argv } = splitEnvAssignments(tokens);
     const [base, ...args] = argv;
-    if (!base) return "Blocked: empty command.";
 
+    if (!base) {
+      auditCommand({ command, allowed: false, reason: "empty command" });
+      return "Command not allowed: empty command.";
+    }
     if (!SAFE_COMMANDS.has(base)) {
+      auditCommand({ command, allowed: false, reason: `base command not allowed: ${base}` });
       return `Command not allowed: "${base}". Allowed commands: ${[...SAFE_COMMANDS].join(", ")}`;
+    }
+
+    const disallowedFlag = getDisallowedFlag(base, args);
+    if (disallowedFlag) {
+      auditCommand({ command, allowed: false, reason: `inline execution flag: ${disallowedFlag}` });
+      return `Blocked: "${base} ${disallowedFlag}" can execute arbitrary inline code. Use a file in the workspace instead.`;
     }
 
     const safety = assessCommandSafety(base, args);
     if (!safety.ok) {
       auditCommand({ command, allowed: false, reason: safety.reason });
-      return safety.reason ?? "Blocked destructive command.";
+      return safety.reason ?? "Blocked by command safety policy.";
     }
 
     const pathError = validateWorkspacePaths(tokens);

@@ -1,13 +1,13 @@
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
-import { exec } from "child_process";
+import { execFile } from "child_process";
 import { promisify } from "util";
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
-async function git(command: string): Promise<string> {
+async function git(args: string[]): Promise<string> {
   try {
-    const { stdout, stderr } = await execAsync(`git ${command}`, { timeout: 30000 });
+    const { stdout, stderr } = await execFileAsync("git", args, { timeout: 30000 });
     return stdout || stderr || "[no output]";
   } catch (error) {
     if (error instanceof Error && "stderr" in error) {
@@ -19,7 +19,7 @@ async function git(command: string): Promise<string> {
 
 export const GitStatusTool = tool(
   async () => {
-    return await git("status");
+    return await git(["status"]);
   },
   {
     name: "git_status",
@@ -30,7 +30,7 @@ export const GitStatusTool = tool(
 
 export const GitDiffTool = tool(
   async () => {
-    return await git("diff");
+    return await git(["diff"]);
   },
   {
     name: "git_diff",
@@ -41,7 +41,7 @@ export const GitDiffTool = tool(
 
 export const GitLogTool = tool(
   async ({ n }: { n?: number } = {}) => {
-    return await git(`log --oneline -${n ?? 10}`);
+    return await git(["log", "--oneline", `-${n ?? 10}`]);
   },
   {
     name: "git_log",
@@ -54,7 +54,7 @@ export const GitLogTool = tool(
 
 export const GitBranchTool = tool(
   async () => {
-    return await git("branch -a");
+    return await git(["branch", "-a"]);
   },
   {
     name: "git_branch",
@@ -65,7 +65,7 @@ export const GitBranchTool = tool(
 
 export const GitCommitTool = tool(
   async ({ message }: { message: string }) => {
-    return await git(`commit -m "${message}"`);
+    return await git(["commit", "-m", message]);
   },
   {
     name: "git_commit",

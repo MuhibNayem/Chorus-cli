@@ -1,5 +1,7 @@
 # Deep Agent CLI Implementation Plan
 
+> Status note: this is historical planning context. The live implementation in `src/` now uses Ink, session persistence, and a different module layout than the original Blessed-based plan described below.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build an interactive coding agent CLI with split-pane TUI, streaming `<|think|>` reasoning, prompt caching/compaction, three specialized subagents (planner, vapt, builder), and tool calling (file, shell, git, web search).

@@ -2,34 +2,27 @@ import "dotenv/config";
 import { createElement } from "react";
 import { render } from "ink";
 import { App } from "./cli/index.js";
-import { SessionPicker } from "./session/picker.js";
+import { hasRequiredLlmSettings, loadSettings, saveSettings } from "./settings/storage.js";
+import { SettingsWizard } from "./settings/wizard.js";
 import { sessionManager } from "./session/manager.js";
-import type { SessionMetadata } from "./session/types.js";
 
 async function main() {
-  const sessions = sessionManager.listForWorkspace();
-
-  if (sessions.length > 0) {
-    const selected = await new Promise<SessionMetadata | null>((resolve) => {
+  if (!hasRequiredLlmSettings()) {
+    await new Promise<void>((resolve) => {
       const { unmount } = render(
-        createElement(SessionPicker, {
-          sessions,
-          onSelect: (s) => {
+        createElement(SettingsWizard, {
+          initialSettings: loadSettings(),
+          onSubmit: (settings) => {
+            saveSettings(settings);
             unmount();
-            resolve(s);
+            resolve();
           },
         }),
       );
     });
-
-    if (selected) {
-      sessionManager.resumeSession(selected.id);
-    } else {
-      sessionManager.createSession();
-    }
-  } else {
-    sessionManager.createSession();
   }
+
+  sessionManager.createSession();
 
   process.on("exit", () => sessionManager.flushSync());
 

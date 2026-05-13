@@ -1,85 +1,104 @@
-import { semanticRoute, type RouteResult } from "./semanticRouter.js";
-import { runWorkerPipeline, type WorkerEngineResult, type WorkerEngineOptions } from "./workerEngine.js";
-import { Annotation, StateGraph, MemorySaver, START, END } from "@langchain/langgraph";
-import { streamOllama } from "../ollama/client.js";
-import { SYSTEM_PROMPT } from "../prompts/system.js";
+import { allSubagents } from "../subagents/index.js";
+import { allTools } from "../tools/index.js";
+import { buildVerificationCriteria, routeTask } from "./router.js";
+import { buildRuntimePrompt, createContextBundle } from "./contextAssembler.js";
+import { buildExecutionProtocol } from "./protocol.js";
+import { loadProjectMemory } from "./projectMemory.js";
+import { loadRepoIntelligence } from "./repoIntelligence.js";
+import type {
+  PreparedTaskExecution,
+  ExecutionMode,
+  TaskRoute,
+  TaskRecord,
+  WorkerAssignment,
+  WorkerRole,
+} from "./types.js";
 
-const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL ?? "http://localhost:11434";
-const MODEL_NAME = process.env.OLLAMA_MODEL ?? "batiai/gemma4-e2b:q4";
-
-export interface OrchestratorOptions {
-  task: string;
-  threadId?: string;
-  onProgress?: (role: string, chunk: string) => void;
+interface PrepareTaskExecutionInput {
+  text: string;
+  expandedText: string;
+  basePrompt: string;
+  messages: Array<{ role: string; content: string; reasoning_content?: string }>;
+  mode?: ExecutionMode;
 }
 
-export interface OrchestratorResult extends WorkerEngineResult {
-  route: RouteResult;
-  strategy: "direct" | "single_file" | "full_pipeline";
+function createWorkerAssignments(taskId: string, route: TaskRoute): WorkerAssignment[] {
+  if (route.path === "direct_agent_path") return [];
+
+  const roles: WorkerRole[] =
+    route.requiresResearch ? ["researcher", "planner", "reviewer"] :
+    route.lane === "background_async" ? ["planner", "reviewer", "tester"] :
+    route.canParallelize ? ["planner", "coder", "reviewer", "tester"] :
+    ["orchestrator"];
+
+  return roles.map((role, index) => ({
+    workerId: `${taskId}-${role}-${index}`,
+    role,
+    ownedScope:
+      role === "coder" ? ["workspace"] :
+      role === "reviewer" ? ["changed-surface"] :
+      role === "tester" ? ["verification-surface"] :
+      [],
+    inputBundleId: `ctx-${taskId}`,
+    status: "queued",
+  }));
 }
 
-// Direct agent for simple / low-confidence tasks (answer_only, inspect_only, low confidence)
-async function runDirectAgent(task: string, onProgress?: (chunk: string) => void): Promise<string> {
-  let output = "";
-  await new Promise<void>((resolve, reject) => {
-    streamOllama({
-      baseUrl: OLLAMA_BASE_URL,
-      model: MODEL_NAME,
-      systemPrompt: SYSTEM_PROMPT,
-      messages: [{ role: "user", content: task }],
-      onThink: () => {},
-      onResponse: (chunk) => {
-        output += chunk;
-        onProgress?.(chunk);
-      },
-      onComplete: () => resolve(),
-      onError: reject,
-    });
+export function prepareTaskExecution(input: PrepareTaskExecutionInput): PreparedTaskExecution {
+  const mode = input.mode ?? "build";
+  const route = routeTask({
+    text: input.text,
+    expandedText: input.expandedText,
   });
-  return output;
-}
+  const repoIntelligence = loadRepoIntelligence();
+  const projectMemory = loadProjectMemory();
+  const protocol = buildExecutionProtocol(route, repoIntelligence, mode);
 
-export async function orchestrate(options: OrchestratorOptions): Promise<OrchestratorResult> {
-  const { task, threadId, onProgress } = options;
+  const task: TaskRecord = {
+    taskId: `task-${Date.now()}`,
+    owner: "orchestrator",
+    lane: route.lane,
+    path: route.path,
+    status: "running",
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    verificationCriteria: buildVerificationCriteria(route, mode),
+  };
 
-  const route = await semanticRoute(task);
+  const workerAssignments = mode === "plan" ? [] : createWorkerAssignments(task.taskId, route);
+  const toolNames = allTools.map((tool) => tool.name);
+  const subagentNames = allSubagents.map((subagent) => subagent.name);
+  const contextBundle = createContextBundle({
+    basePrompt: input.basePrompt,
+    task,
+    messages: input.messages,
+    toolNames,
+    subagentNames,
+    workerAssignments,
+    repoIntelligence,
+    projectMemory,
+  });
 
-  // Low-confidence or trivial tasks → direct single-agent path
-  if (route.confidence < 0.6 || route.kind === "answer_only" || route.kind === "inspect_only") {
-    const output = await runDirectAgent(task, onProgress ? (c) => onProgress("agent", c) : undefined);
-    return {
-      route,
-      strategy: "direct",
-      threadId: threadId ?? `direct-${Date.now()}`,
-      finalSummary: output,
-      codeChanges: "",
-      reviewNotes: "",
-      findings: { agent: output },
-    };
-  }
+  const runtimePrompt = buildRuntimePrompt(
+    input.basePrompt,
+    task,
+    `${route.lane} / ${route.path}`,
+    contextBundle,
+    workerAssignments,
+    protocol,
+    repoIntelligence,
+    projectMemory
+  );
 
-  // High-confidence single_file_edit → skip researcher, go straight to coder + reviewer
-  if (route.kind === "single_file_edit" && route.confidence >= 0.8) {
-    const result = await runWorkerPipeline({
-      task,
-      threadId,
-      onProgress,
-    });
-    return { route, strategy: "single_file", ...result };
-  }
-
-  // High-confidence debug → add dedicated debug context
-  if (route.kind === "debug" && route.confidence >= 0.8) {
-    const debugTask = `DEBUG MODE: ${task}\n\nFocus on identifying the root cause before proposing a fix. Use systematic elimination.`;
-    const result = await runWorkerPipeline({
-      task: debugTask,
-      threadId,
-      onProgress,
-    });
-    return { route, strategy: "full_pipeline", ...result };
-  }
-
-  // Default: full multi-worker pipeline
-  const result = await runWorkerPipeline({ task, threadId, onProgress });
-  return { route, strategy: "full_pipeline", ...result };
+  return {
+    mode,
+    task,
+    route,
+    protocol,
+    repoIntelligence,
+    projectMemory,
+    contextBundle,
+    workerAssignments,
+    runtimePrompt,
+  };
 }
