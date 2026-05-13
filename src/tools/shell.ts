@@ -1,11 +1,12 @@
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
-import { exec } from "child_process";
+import { execFile } from "child_process";
 import { promisify } from "util";
 import * as path from "path";
 import * as fs from "fs";
+import { assessCommandSafety, auditCommand } from "./safety.js";
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 const WORKSPACE = process.cwd();
 const WORKSPACE_SEP = WORKSPACE.endsWith(path.sep) ? WORKSPACE : WORKSPACE + path.sep;
 
@@ -56,12 +57,60 @@ const SAFE_COMMANDS = new Set([
   "awk",
 ]);
 
-function getBaseCommand(command: string): string {
-  const parts = command.trim().split(/\s+/);
-  for (const part of parts) {
-    if (!/^[A-Z_]+=/.test(part)) return part;
+function tokenizeCommand(command: string): string[] {
+  const tokens: string[] = [];
+  let current = "";
+  let quote: "'" | "\"" | null = null;
+  let escaping = false;
+
+  for (const char of command.trim()) {
+    if (escaping) {
+      current += char;
+      escaping = false;
+      continue;
+    }
+    if (char === "\\" && quote !== "'") {
+      escaping = true;
+      continue;
+    }
+    if ((char === "'" || char === "\"") && !quote) {
+      quote = char;
+      continue;
+    }
+    if (quote === char) {
+      quote = null;
+      continue;
+    }
+    if (!quote && /\s/.test(char)) {
+      if (current) {
+        tokens.push(current);
+        current = "";
+      }
+      continue;
+    }
+    current += char;
   }
-  return parts[0];
+
+  if (quote) throw new Error("Unclosed quote in command.");
+  if (escaping) current += "\\";
+  if (current) tokens.push(current);
+  return tokens;
+}
+
+function hasShellSyntax(command: string): boolean {
+  return /[;&|<>`\n\r]/.test(command) || command.includes("$(");
+}
+
+function splitEnvAssignments(tokens: string[]): { env: Record<string, string>; argv: string[] } {
+  const env: Record<string, string> = {};
+  let index = 0;
+  while (index < tokens.length) {
+    const match = tokens[index].match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
+    if (!match) break;
+    env[match[1]] = match[2];
+    index += 1;
+  }
+  return { env, argv: tokens.slice(index) };
 }
 
 /**
@@ -73,12 +122,7 @@ function getBaseCommand(command: string): string {
  *   2. Relative paths with .. that escape WORKSPACE when resolved
  *   3. Home directory shortcuts (~ / $HOME / $TMPDIR / /tmp)
  */
-function validateWorkspacePaths(command: string): string | null {
-  // Tokenize: split on whitespace, strip surrounding quotes
-  const tokens = (command.match(/(?:[^\s'"]+|'[^']*'|"[^"]*")+/g) ?? []).map(
-    (t) => t.replace(/^['"]|['"]$/g, "")
-  );
-
+function validateWorkspacePaths(tokens: string[]): string | null {
   for (const token of tokens) {
     // Skip short flags like -f, --dry-run, KEY=val prefixes
     if (token.startsWith("-") || /^[A-Z_]+=/.test(token)) continue;
@@ -132,18 +176,18 @@ function validateWorkspacePaths(command: string): string | null {
 
   // ── Env-var shortcuts that expand outside workspace ───────────────────────
   const dangerousVars = ["$HOME", "${HOME}", "$TMPDIR", "${TMPDIR}", "$TMP", "${TMP}"];
-  for (const v of dangerousVars) {
-    if (command.includes(v)) {
-      return `Blocked: "${v}" expands outside the workspace.`;
+  for (const token of tokens) {
+    for (const v of dangerousVars) {
+      if (token.includes(v)) {
+        return `Blocked: "${v}" expands outside the workspace.`;
+      }
     }
   }
 
   // ── Block /tmp and other well-known system dirs explicitly ────────────────
   const systemDirs = ["/tmp", "/var", "/etc", "/usr", "/bin", "/sbin", "/opt", "/private"];
   for (const dir of systemDirs) {
-    // Look for these as path prefixes in the raw command string
-    const re = new RegExp(`(?:^|\\s|['"])${dir.replace("/", "\\/")}(?:[/\\s'"]|$)`);
-    if (re.test(command)) {
+    if (tokens.some((token) => token === dir || token.startsWith(`${dir}/`))) {
       return (
         `Blocked: system directory "${dir}" is outside the workspace.\n` +
         `Use paths relative to the workspace: ${WORKSPACE}`
@@ -156,19 +200,43 @@ function validateWorkspacePaths(command: string): string | null {
 
 export const ExecuteTool = tool(
   async ({ command }: { command: string }) => {
-    const base = getBaseCommand(command);
+    if (hasShellSyntax(command)) {
+      auditCommand({ command, allowed: false, reason: "shell syntax/operator blocked" });
+      return "Blocked: shell operators, redirection, command substitution, and pipelines are not allowed.";
+    }
+
+    let tokens: string[];
+    try {
+      tokens = tokenizeCommand(command);
+    } catch (err) {
+      return `Blocked: ${err instanceof Error ? err.message : String(err)}`;
+    }
+    const { env, argv } = splitEnvAssignments(tokens);
+    const [base, ...args] = argv;
+    if (!base) return "Blocked: empty command.";
+
     if (!SAFE_COMMANDS.has(base)) {
       return `Command not allowed: "${base}". Allowed commands: ${[...SAFE_COMMANDS].join(", ")}`;
     }
 
-    const pathError = validateWorkspacePaths(command);
-    if (pathError) return pathError;
+    const safety = assessCommandSafety(base, args);
+    if (!safety.ok) {
+      auditCommand({ command, allowed: false, reason: safety.reason });
+      return safety.reason ?? "Blocked destructive command.";
+    }
+
+    const pathError = validateWorkspacePaths(tokens);
+    if (pathError) {
+      auditCommand({ command, allowed: false, reason: pathError });
+      return pathError;
+    }
 
     try {
-      const { stdout, stderr } = await execAsync(command, {
+      auditCommand({ command, allowed: true });
+      const { stdout, stderr } = await execFileAsync(base, args, {
         cwd: WORKSPACE,
         timeout: 60000,
-        env: { ...process.env, FORCE_COLOR: "0" },
+        env: { ...process.env, ...env, FORCE_COLOR: "0" },
       });
       const out = [stdout, stderr].filter(Boolean).join("\n--- stderr ---\n").trim();
       return out || "[no output]";

@@ -13,6 +13,7 @@ const DESTRUCTIVE_FLAGS: Record<string, Set<string>> = {
 };
 
 const DESTRUCTIVE_GIT_SUBCOMMANDS = new Set(["push", "reset", "clean"]);
+const DESTRUCTIVE_GIT_CHECKOUT_FLAGS = new Set(["-f", "--force"]);
 
 export function assessCommandSafety(base: string, args: string[]): CommandSafetyResult {
   if (base === "rm") {
@@ -25,8 +26,11 @@ export function assessCommandSafety(base: string, args: string[]): CommandSafety
   }
 
   if (base === "git" && args[0]) {
-    if (DESTRUCTIVE_GIT_SUBCOMMANDS.has(args[0]) && args.includes("--force")) {
-      return { ok: false, reason: `Blocked: "git ${args[0]} --force" requires explicit approval.` };
+    if (DESTRUCTIVE_GIT_SUBCOMMANDS.has(args[0])) {
+      return { ok: false, reason: `Blocked destructive git command: git ${args[0]}` };
+    }
+    if (args[0] === "checkout" && args.some((arg) => DESTRUCTIVE_GIT_CHECKOUT_FLAGS.has(arg))) {
+      return { ok: false, reason: "Blocked destructive git command: git checkout --force" };
     }
   }
 
