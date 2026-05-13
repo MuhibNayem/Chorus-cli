@@ -32,15 +32,10 @@ export function AgentCreator({ onDone, onCancel, initialAgent }: AgentCreatorPro
 
   const activeField = FIELDS[fieldIndex];
 
+  // Only handle Esc and Tab here; Enter is handled by TextInput's onSubmit
+  // to avoid double-firing on the same keypress.
   useInput((_input, key) => {
     if (key.escape) { onCancel(); return; }
-    if (key.return) {
-      if (fieldIndex < FIELDS.length - 1) {
-        setFieldIndex((i) => i + 1);
-      } else {
-        handleSave();
-      }
-    }
     if (key.tab) {
       setFieldIndex((i) => (i + 1) % FIELDS.length);
     }

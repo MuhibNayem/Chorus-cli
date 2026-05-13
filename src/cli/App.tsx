@@ -76,7 +76,7 @@ function loadHistory(): string[] {
 function saveHistory(history: string[]): void {
   try {
     fs.mkdirSync(path.dirname(HISTORY_PATH), { recursive: true });
-    fs.writeFileSync(HISTORY_PATH, JSON.stringify(history.slice(0, HISTORY_MAX)));
+    fs.writeFileSync(HISTORY_PATH, JSON.stringify(history.slice(0, HISTORY_MAX)), { mode: 0o600 });
   } catch { /* non-fatal */ }
 }
 
@@ -178,8 +178,12 @@ export function App() {
   useInput((_input, key) => {
     if (key.ctrl && _input === "c") exit();
 
-    // Escape: dismiss suggestions
+    // Escape: cancel in-progress stream, or dismiss suggestions
     if (key.escape) {
+      if (feedState.processing) {
+        cancel();
+        return;
+      }
       setSuggestionIndex(-1);
       return;
     }
@@ -221,7 +225,7 @@ export function App() {
 
   const currentSession = sessionManager.getCurrent();
 
-  const { submit, clearHistory, loadSession } = useAgentStream({
+  const { submit, clearHistory, loadSession, cancel } = useAgentStream({
     dispatch,
     onTokensUpdate: setTokens,
     initialMessages: currentSession?.messages,

@@ -92,20 +92,24 @@ function makeWorkerNode(role: WorkerRole, config: WorkerNodeConfig) {
       }
 
       case "planner": {
+        // Planner runs in parallel with researcher, so researcher findings are not yet available.
+        // It receives only the raw task and produces an initial plan; coder merges both.
         const result = await callWorker(
           role,
           PLANNER_PROMPT,
-          `Create a step-by-step implementation plan.\n\nTask: ${state.task}\n\nResearch findings:\n${state.findings.researcher ?? ""}\n\nProvide a numbered implementation plan.`,
+          `Create a step-by-step implementation plan based solely on the task description.\n\nTask: ${state.task}\n\nProvide a numbered implementation plan.`,
           notify
         );
         return { findings: { planner: result }, plan: result };
       }
 
       case "coder": {
+        // Coder runs after both researcher and planner, so it can merge their outputs.
+        const researchContext = state.findings.researcher ? `\n\nResearch findings:\n${state.findings.researcher}` : "";
         const result = await callWorker(
           role,
           BUILDER_PROMPT,
-          `Implement the following plan.\n\nTask: ${state.task}\n\nPlan:\n${state.plan}\n\nContext:\n${state.findings.researcher ?? ""}\n\nProvide the implementation with code changes.`,
+          `Implement the following plan.\n\nTask: ${state.task}\n\nPlan:\n${state.plan}${researchContext}\n\nProvide the implementation with code changes.`,
           notify
         );
         return { findings: { coder: result }, codeChanges: result };

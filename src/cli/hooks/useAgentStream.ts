@@ -9,6 +9,7 @@ import { SYSTEM_PROMPT } from "../../prompts/system.js";
 import { countMessagesTokens } from "../../context/tokenizer.js";
 import { shouldCompact, compactMessages, trimToWindow, COMPACTION_THRESHOLD } from "../../context/compaction.js";
 import { sessionManager } from "../../session/manager.js";
+import { estimateCost } from "../../llm/pricing.js";
 import type { FeedAction } from "../state/feedReducer.js";
 
 const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL ?? "http://localhost:11434";
@@ -107,6 +108,8 @@ Node version: ${process.version}
         let lastAIMsg: any        = null;
         let responseTextFromStream = "";
         let thinkingDispatched    = false;
+        let totalInputTokens      = 0;
+        let totalOutputTokens     = 0;
 
         for await (const rawChunk of stream) {
           if (abortController.signal.aborted) break;
@@ -138,6 +141,13 @@ Node version: ${process.version}
                 dispatch({ type: "APPEND_THINK_TOKEN", text: thinking });
                 dbg("THINK_TOKEN", { len: thinking.length });
               }
+
+              // Collect token usage from LangChain response_metadata (Ollama/OpenAI)
+              const meta = msg.response_metadata ?? msg.usage_metadata ?? {};
+              const inp = meta.prompt_eval_count ?? meta.input_tokens ?? meta.prompt_tokens ?? 0;
+              const out = meta.eval_count ?? meta.output_tokens ?? meta.completion_tokens ?? 0;
+              if (inp) totalInputTokens  = Math.max(totalInputTokens,  inp);
+              if (out) totalOutputTokens = Math.max(totalOutputTokens, out);
             }
 
             const isToolMsg = msgType === "ToolMessage" || msgType === "tool";
@@ -213,6 +223,7 @@ Node version: ${process.version}
         }
 
         if (abortController.signal.aborted) {
+          dispatch({ type: "FINALIZE_TURN" });
           dispatch({
             type:    "SET_ERROR",
             id:      `cancelled-${Date.now()}`,
@@ -239,10 +250,20 @@ Node version: ${process.version}
         const finalCount = await countMessagesTokens(messagesRef.current, SYSTEM_PROMPT);
         onTokensUpdate(finalCount);
 
+        if (totalInputTokens > 0 || totalOutputTokens > 0) {
+          dispatch({
+            type:         "ADD_USAGE",
+            inputTokens:  totalInputTokens,
+            outputTokens: totalOutputTokens,
+            cost:         estimateCost(MODEL_NAME, totalInputTokens, totalOutputTokens),
+          });
+        }
+
         dispatch({ type: "FINALIZE_TURN" });
 
       } catch (err) {
         if (err instanceof Error && err.name === "AbortError") {
+          dispatch({ type: "FINALIZE_TURN" });
           dispatch({
             type:    "SET_ERROR",
             id:      `cancelled-${Date.now()}`,

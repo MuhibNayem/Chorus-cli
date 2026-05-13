@@ -2,6 +2,10 @@ import { createHash } from "crypto";
 import { streamOllama } from "../ollama/client.js";
 import type { TaskKind, ExecutionLane, TaskPath, TaskRoute } from "./types.js";
 
+const VALID_KINDS   = new Set<TaskKind>(["answer_only","inspect_only","single_file_edit","multi_file_edit","debug","research","project_phase"]);
+const VALID_LANES   = new Set<ExecutionLane>(["foreground_sync","background_async","cheap_triage"]);
+const VALID_PATHS   = new Set<TaskPath>(["direct_agent_path","tool_or_single_worker_path","parallel_multi_worker_path","research_then_plan_path","background_or_batch_path"]);
+
 const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL ?? "http://localhost:11434";
 const MODEL_NAME = process.env.OLLAMA_MODEL ?? "batiai/gemma4-e2b:q4";
 const ROUTER_TIMEOUT_MS = 2_000;
@@ -80,7 +84,10 @@ async function callRouterLLM(task: string): Promise<RouteResult> {
   if (!jsonMatch) throw new Error("No JSON in router output");
 
   const parsed = JSON.parse(jsonMatch[0]);
-  const kind = parsed.kind as TaskKind;
+
+  const kind: TaskKind = VALID_KINDS.has(parsed.kind) ? parsed.kind : FALLBACK_ROUTE.kind;
+  const lane: ExecutionLane = VALID_LANES.has(parsed.lane) ? parsed.lane : FALLBACK_ROUTE.lane;
+  const routePath: TaskPath = VALID_PATHS.has(parsed.path) ? parsed.path : FALLBACK_ROUTE.path;
   const confidence = typeof parsed.confidence === "number"
     ? Math.max(0, Math.min(1, parsed.confidence))
     : 0.5;
@@ -89,8 +96,8 @@ async function callRouterLLM(task: string): Promise<RouteResult> {
 
   return {
     kind,
-    lane: (parsed.lane as ExecutionLane) ?? FALLBACK_ROUTE.lane,
-    path: (parsed.path as TaskPath) ?? FALLBACK_ROUTE.path,
+    lane,
+    path: routePath,
     confidence,
     ...derived,
   };

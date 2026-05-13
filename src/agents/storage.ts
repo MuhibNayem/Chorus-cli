@@ -11,8 +11,13 @@ function agentsDir(scope: "user" | "project"): string {
 }
 
 export function saveAgent(agent: Omit<AgentDef, "filePath" | "source">, scope: "user" | "project" = "user"): string {
+  // Reject names containing path separators or traversal sequences
+  const safeName = path.basename(agent.name);
+  if (!safeName || safeName !== agent.name || safeName.includes("..")) {
+    throw new Error(`Invalid agent name: "${agent.name}". Names must not contain path separators or traversal sequences.`);
+  }
   const dir = agentsDir(scope);
-  const filePath = path.join(dir, `${agent.name}.json`);
+  const filePath = path.join(dir, `${safeName}.json`);
   fs.writeFileSync(filePath, JSON.stringify({ ...agent }, null, 2), "utf-8");
   return filePath;
 }

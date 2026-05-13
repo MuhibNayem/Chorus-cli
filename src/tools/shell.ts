@@ -113,6 +113,17 @@ function validateWorkspacePaths(command: string): string | null {
       }
     }
 
+    // ── Symlink check for relative paths (catches link-to-outside/file) ───────
+    if (!path.isAbsolute(token) && !token.startsWith("-") && token.includes("/")) {
+      const resolved = path.resolve(WORKSPACE, token);
+      try {
+        const real = fs.realpathSync(resolved);
+        if (real !== WORKSPACE && !real.startsWith(WORKSPACE_SEP)) {
+          return `Blocked: symlink "${token}" resolves outside the workspace (→ ${real}).`;
+        }
+      } catch { /* path doesn't exist yet — no symlink to follow */ }
+    }
+
     // ── Home-dir shortcuts ────────────────────────────────────────────────────
     if (token === "~" || token.startsWith("~/")) {
       return `Blocked: home directory reference "${token}" is outside the workspace.`;
