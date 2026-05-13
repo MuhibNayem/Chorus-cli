@@ -112,18 +112,25 @@ export type FeedAction =
   | { type: "FINALIZE_SUBAGENT"; id: string; completedAt: number }
   // Session actions
   | { type: "ADD_SESSION_EVENT"; sessionId: string; event: TurnEvent }
-  | { type: "FINALIZE_SESSION"; sessionId: string; completedAt: number };
+  | { type: "FINALIZE_SESSION"; sessionId: string; completedAt: number }
+  | { type: "ADD_USAGE"; inputTokens: number; outputTokens: number; cost: number };
 
 export interface FeedState {
   entries: FeedEntry[];
   processing: boolean;
   sessions: Record<string, AgentSession>;
+  totalCost: number;
+  totalInputTokens: number;
+  totalOutputTokens: number;
 }
 
 export const initialFeedState: FeedState = {
   entries: [],
   processing: false,
   sessions: {},
+  totalCost: 0,
+  totalInputTokens: 0,
+  totalOutputTokens: 0,
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -452,6 +459,15 @@ export function feedReducer(state: FeedState, action: FeedAction): FeedState {
             completedAt: action.completedAt,
           },
         },
+      };
+    }
+
+    case "ADD_USAGE": {
+      return {
+        ...state,
+        totalInputTokens: state.totalInputTokens + action.inputTokens,
+        totalOutputTokens: state.totalOutputTokens + action.outputTokens,
+        totalCost: state.totalCost + action.cost,
       };
     }
 
