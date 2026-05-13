@@ -1,3 +1,4 @@
+import { isAdvisorEnabled } from "../settings/storage.js";
 import type { ExecutionMode, ExecutionProtocol, ExecutionStage, RepoIntelligence, TaskRoute } from "./types.js";
 
 export function buildExecutionProtocol(
@@ -11,6 +12,9 @@ export function buildExecutionProtocol(
   if (mode === "plan" || route.kind === "project_phase" || route.path === "research_then_plan_path") stages.push("planned");
   if (mode === "build" && route.kind !== "inspect_only" && route.kind !== "answer_only") {
     stages.push("inspected", "planned", "edited", "verified", "reviewed");
+  }
+  if (mode === "build" && (route.kind === "multi_file_edit" || route.kind === "project_phase") && isAdvisorEnabled()) {
+    stages.splice(stages.indexOf("edited"), 0, "advised");
   }
   stages.push("finalized");
 

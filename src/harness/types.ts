@@ -28,6 +28,7 @@ export type ExecutionStage =
   | "classified"
   | "inspected"
   | "planned"
+  | "advised"
   | "edited"
   | "verified"
   | "reviewed"
@@ -48,7 +49,8 @@ export type WorkerRole =
   | "coder"
   | "researcher"
   | "reviewer"
-  | "tester";
+  | "tester"
+  | "advisor";
 
 export interface VerificationCriterion {
   id: string;

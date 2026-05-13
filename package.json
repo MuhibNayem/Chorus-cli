@@ -1,12 +1,44 @@
 {
-  "name": "deep-agent-cli",
+  "name": "chorus-agent-cli",
   "version": "0.1.0",
+  "description": "A high-performance, local-first interactive agent harness for production coding tasks. Multi-agent orchestration with Ollama, OpenAI, DeepSeek, and more.",
   "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "chorus": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "docs",
+    "README.md",
+    "LICENSE",
+    ".env.example"
+  ],
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "keywords": [
+    "cli",
+    "ai",
+    "agent",
+    "llm",
+    "ollama",
+    "openai",
+    "deepseek",
+    "coding",
+    "terminal",
+    "tui",
+    "ink",
+    "langchain",
+    "langgraph"
+  ],
   "scripts": {
     "dev": "tsx src/index.ts",
-    "build": "tsc",
+    "build": "rm -rf dist && tsc",
     "start": "node dist/index.js",
-    "test": "vitest run"
+    "test": "vitest run",
+    "prepublishOnly": "npm run build && npm test"
   },
   "dependencies": {
     "@inkjs/ui": "^2.0.0",

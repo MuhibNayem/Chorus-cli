@@ -29,6 +29,7 @@ function roleEmoji(role: WorkerRole): string {
     case "reviewer": return "👁️";
     case "tester": return "🧪";
     case "orchestrator": return "🎛️";
+    case "advisor": return "🧠";
     default: return "🤖";
   }
 }
@@ -41,6 +42,7 @@ function roleColor(role: WorkerRole): string {
     case "reviewer": return "yellow";
     case "tester": return "magenta";
     case "orchestrator": return "white";
+    case "advisor": return "cyanBright";
     default: return "gray";
   }
 }

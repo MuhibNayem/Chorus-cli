@@ -18,6 +18,7 @@ import { executeWorkers, formatWorkerResults } from "../../../harness/workerEngi
 import { SYSTEM_PROMPT } from "../../../prompts/system.js";
 import { countMessagesTokens } from "../../../context/tokenizer.js";
 import { createProvider, getDefaultProvider, getProviderModel } from "../../../llm/index.js";
+import { getModeModelConfig } from "../../../settings/storage.js";
 import { sessionManager } from "../../../session/manager.js";
 import { processAgentStream } from "../../agent/streamProcessor.js";
 import type { HitlInterrupt } from "../../agent/streamProcessor.js";
@@ -181,10 +182,16 @@ export async function prepareHarness(
     messages,
     mode,
   });
-  const provider = providerName
-    ? createProvider(providerName)
+
+  // Check mode-specific provider/model config first
+  const modeConfig = getModeModelConfig(mode);
+  const effectiveProviderName = modeConfig?.provider ?? providerName;
+  const effectiveModelName = modeConfig?.model ?? modelName;
+
+  const provider = effectiveProviderName
+    ? createProvider(effectiveProviderName)
     : await getDefaultProvider();
-  const resolvedModel = modelName ?? getProviderModel(provider.name);
+  const resolvedModel = effectiveModelName ?? getProviderModel(provider.name);
 
   recordTaskStarted(prepared);
   const harnessRun = createHarnessRunRecord({

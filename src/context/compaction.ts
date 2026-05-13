@@ -19,23 +19,23 @@ export interface CompactionResult {
   compressedCount: number;
 }
 
-export function shouldCompact(
+export async function shouldCompact(
   messages: Array<{ role: string; content: string; reasoning_content?: string }>,
   systemPrompt: string,
   contextWindow?: number
-): boolean {
+): Promise<boolean> {
   const threshold = contextWindow ?? COMPACTION_THRESHOLD;
-  const tokens = countMessagesTokens(messages, systemPrompt);
+  const tokens = await Promise.resolve(countMessagesTokens(messages, systemPrompt));
   return tokens >= getThresholds(threshold).threshold;
 }
 
-function selectRecentMessages(
+async function selectRecentMessages(
   messages: Array<{ role: string; content: string; reasoning_content?: string }>,
   keepTokens: number
-): {
+): Promise<{
   recentMessages: Array<{ role: string; content: string; reasoning_content?: string }>;
   olderMessages: Array<{ role: string; content: string; reasoning_content?: string }>;
-} {
+}> {
   const tokenCosts = messages.map((message) => {
     let text = `${message.role}: ${message.content}`;
     if (message.reasoning_content) {
@@ -74,9 +74,9 @@ export async function compactMessages(
   contextWindow?: number
 ): Promise<CompactionResult> {
   const { keepRecent } = getThresholds(contextWindow ?? COMPACTION_THRESHOLD);
-  const originalCount = countMessagesTokens(messages, systemPrompt);
+  const originalCount = await Promise.resolve(countMessagesTokens(messages, systemPrompt));
 
-  const { recentMessages, olderMessages } = selectRecentMessages(messages, keepRecent);
+  const { recentMessages, olderMessages } = await selectRecentMessages(messages, keepRecent);
 
   const summaryPrompt = `Summarize the following conversation, preserving key facts, decisions, architecture choices, and important context. Keep the summary concise but comprehensive enough that future interactions can understand the history.
 
@@ -120,7 +120,7 @@ export async function trimToWindow(
   budget?: number
 ): Promise<Array<{ role: string; content: string; reasoning_content?: string }>> {
   const targetBudget = budget ?? KEEP_RECENT_TOKENS;
-  let currentTokens = countMessagesTokens(messages, systemPrompt);
+  let currentTokens = await Promise.resolve(countMessagesTokens(messages, systemPrompt));
   if (currentTokens <= targetBudget) return messages;
 
   const result = [...messages];
@@ -128,7 +128,7 @@ export async function trimToWindow(
   for (let i = 0; i < result.length && currentTokens > targetBudget; i++) {
     if (result[i].role === "system") continue;
     const msgText = `${result[i].role}: ${result[i].content}`;
-    const msgTokens = countTokens(msgText);
+    const msgTokens = await Promise.resolve(countTokens(msgText));
     result.splice(i, 1);
     currentTokens -= msgTokens;
     i--; // adjust index after removal

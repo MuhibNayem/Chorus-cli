@@ -95,6 +95,7 @@ export function App() {
   const [sessionModel, setSessionModel] = useState<string | null>(null);
   const [executionMode, setExecutionMode] = useState<ExecutionMode>("build");
   const [approvalPolicy, setApprovalPolicy] = useState<ApprovalPolicy>("auto_edit");
+  const [advisorEnabled, setAdvisorEnabled] = useState<boolean>(() => loadSettings().llm?.advisor?.enabled ?? false);
   const [wizardMode, setWizardMode] = useState<"add-provider" | null>(null);
   const [agentCreatorOpen, setAgentCreatorOpen] = useState(false);
   const [agentEditorTarget, setAgentEditorTarget] = useState<AgentDef | null>(null);
@@ -307,6 +308,20 @@ export function App() {
 
   useEffect(() => { tokensRef.current = tokens; }, [tokens]);
 
+  // Auto-switch to mode-specific model when execution mode changes
+  useEffect(() => {
+    const modeConfig = loadSettings().llm?.modes?.[executionMode];
+    if (modeConfig) {
+      setSessionProvider(modeConfig.provider);
+      setSessionModel(modeConfig.model);
+      dispatch({
+        type: "APPEND_SYSTEM",
+        id: `mode-model-${Date.now()}`,
+        text: `${executionMode.toUpperCase()} mode → ${modeConfig.provider}:${modeConfig.model}`,
+      });
+    }
+  }, [executionMode]);
+
   const displayLabel = useMemo(() => {
     if (sessionProvider && sessionModel) return `${sessionProvider}:${sessionModel}`;
     if (sessionProvider) return `${sessionProvider}:${getProviderModel(normalizeProviderName(sessionProvider) ?? "deepseek")}`;
@@ -476,6 +491,18 @@ export function App() {
       }
     }
 
+    // Shift+Tab toggles execution mode (build ↔ plan)
+    if (key.shift && key.tab) {
+      const nextMode = executionMode === "build" ? "plan" : "build";
+      setExecutionMode(nextMode);
+      dispatch({
+        type: "APPEND_SYSTEM",
+        id: `mode-${Date.now()}`,
+        text: `Switched to ${nextMode.toUpperCase()} mode`,
+      });
+      return;
+    }
+
     if (key.tab) {
       if (activeSuggestions.length > 0) {
         setSuggestionIndex((i) =>
@@ -602,17 +629,72 @@ export function App() {
         showResumeSelect,
         showDefaultModelSelect: showDefaultProviderSelect,
         showAgents,
+        showModeModelSelect: (mode) => {
+          const provider = sessionProvider ?? displayLabel.split(":")[0];
+          setSelectionMode({
+            title: `Select provider for ${mode.toUpperCase()} mode`,
+            items: ALL_PROVIDERS.map((p) => ({ value: p.id, label: p.label })),
+            onSelect: (selectedProvider) => {
+              const ps = loadSettings().llm?.providers?.[selectedProvider] ?? {};
+              const providerDef = getProviderById(selectedProvider);
+              setSelectionMode({
+                title: `Select model for ${mode.toUpperCase()} mode  [${selectedProvider}]`,
+                items: [],
+                onSelect: (selectedModel) => {
+                  const settings = loadSettings();
+                  const updated: ChorusSettings = {
+                    ...settings,
+                    llm: {
+                      ...settings.llm,
+                      modes: {
+                        ...settings.llm?.modes,
+                        [mode]: { provider: selectedProvider, model: selectedModel },
+                      },
+                    },
+                  };
+                  saveSettings(updated);
+                  dispatch({ type: "APPEND_SYSTEM", id: `sys-${Date.now()}`, text: `${mode.toUpperCase()} mode → ${selectedProvider}:${selectedModel}` });
+                  setSelectionMode(null);
+                },
+              });
+              setSelectionIndex(0);
+              void (providerDef?.listModels(ps.baseUrl ?? "", ps.apiKey ?? "") ?? Promise.resolve([]))
+                .then((models) => {
+                  setSelectionMode((prev) =>
+                    prev ? { ...prev, items: models.map((m) => ({ value: m, label: m })) } : null
+                  );
+                })
+                .catch(() => {
+                  dispatch({ type: "APPEND_SYSTEM", id: `sys-${Date.now()}`, text: `Could not load models for ${selectedProvider}.` });
+                  setSelectionMode(null);
+                });
+            },
+          });
+          setSelectionIndex(0);
+        },
         getExecutionMode: () => executionMode,
         setExecutionMode,
         getApprovalPolicy: () => approvalPolicy,
         setApprovalPolicy,
+        setAdvisorEnabled: (enabled) => {
+          const settings = loadSettings();
+          const updated: ChorusSettings = {
+            ...settings,
+            llm: {
+              ...settings.llm,
+              advisor: { ...settings.llm?.advisor, enabled },
+            },
+          };
+          saveSettings(updated);
+          setAdvisorEnabled(enabled);
+        },
       });
       if (handled) return;
 
       const expanded = expandMentions(trimmed, workspaceFiles.current);
       await submit(expanded);
     },
-    [submit, clearHistory, feedState.processing, exit, suggestionIndex, activeSuggestions, slashSuggestions, onResumeSession, onNewSession, displayLabel, sessionProvider, sessionModel, executionMode, approvalPolicy, showModelSelectForProvider, showProviderSelect, showResumeSelect, showDefaultProviderSelect, showAgents]
+    [submit, clearHistory, feedState.processing, exit, suggestionIndex, activeSuggestions, slashSuggestions, onResumeSession, onNewSession, displayLabel, sessionProvider, sessionModel, executionMode, approvalPolicy, advisorEnabled, showModelSelectForProvider, showProviderSelect, showResumeSelect, showDefaultProviderSelect, showAgents]
   );
 
   const agentState: AgentState = (() => {

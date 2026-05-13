@@ -1,5 +1,6 @@
 import { allSubagents } from "../subagents/index.js";
 import { allTools } from "../tools/index.js";
+import { isAdvisorEnabled } from "../settings/storage.js";
 import { buildVerificationCriteria, routeTask } from "./router.js";
 import { buildRuntimePrompt, createContextBundle } from "./contextAssembler.js";
 import { buildExecutionProtocol } from "./protocol.js";
@@ -22,8 +23,10 @@ interface PrepareTaskExecutionInput {
   mode?: ExecutionMode;
 }
 
-function createWorkerAssignments(taskId: string, route: TaskRoute): WorkerAssignment[] {
+function createWorkerAssignments(taskId: string, route: TaskRoute, _mode: ExecutionMode): WorkerAssignment[] {
   if (route.path === "direct_agent_path") return [];
+
+  const advisorEnabled = isAdvisorEnabled();
 
   const roles: WorkerRole[] =
     route.requiresResearch ? ["researcher", "planner", "reviewer"] :
@@ -31,13 +34,23 @@ function createWorkerAssignments(taskId: string, route: TaskRoute): WorkerAssign
     route.canParallelize ? ["planner", "coder", "reviewer", "tester"] :
     ["orchestrator"];
 
-  return roles.map((role, index) => ({
+  // Insert advisor between planner and coder when enabled
+  const withAdvisor: WorkerRole[] = [];
+  for (const role of roles) {
+    withAdvisor.push(role);
+    if (advisorEnabled && role === "planner" && roles.includes("coder")) {
+      withAdvisor.push("advisor");
+    }
+  }
+
+  return withAdvisor.map((role, index) => ({
     workerId: `${taskId}-${role}-${index}`,
     role,
     ownedScope:
       role === "coder" ? ["workspace"] :
       role === "reviewer" ? ["changed-surface"] :
       role === "tester" ? ["verification-surface"] :
+      role === "advisor" ? ["plan-review"] :
       [],
     inputBundleId: `ctx-${taskId}`,
     status: "queued",
@@ -65,7 +78,7 @@ export function prepareTaskExecution(input: PrepareTaskExecutionInput): Prepared
     verificationCriteria: buildVerificationCriteria(route, mode),
   };
 
-  const workerAssignments = mode === "plan" ? [] : createWorkerAssignments(task.taskId, route);
+  const workerAssignments = mode === "plan" ? [] : createWorkerAssignments(task.taskId, route, mode);
   const toolNames = allTools.map((tool) => tool.name);
   const subagentNames = allSubagents.map((subagent) => subagent.name);
   const contextBundle = createContextBundle({

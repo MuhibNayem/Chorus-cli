@@ -10,10 +10,27 @@ export type ChorusProviderSettings = {
   summaryModel?: string;
 };
 
+export type ModeModelConfig = {
+  provider: string;
+  model: string;
+};
+
+export type ChorusAdvisorSettings = {
+  enabled: boolean;
+  provider?: string;
+  model?: string;
+  autoOnComplexTasks?: boolean;
+};
+
 export type ChorusSettings = {
   llm?: {
     provider?: string;
     providers?: Record<string, ChorusProviderSettings>;
+    modes?: {
+      build?: ModeModelConfig;
+      plan?: ModeModelConfig;
+    };
+    advisor?: ChorusAdvisorSettings;
   };
 };
 
@@ -98,6 +115,19 @@ export function getMissingLlmSettings(settings: ChorusSettings = loadSettings())
 
 export function hasRequiredLlmSettings(settings: ChorusSettings = loadSettings()): boolean {
   return getMissingLlmSettings(settings).length === 0;
+}
+
+export function getModeModelConfig(mode: "build" | "plan"): ModeModelConfig | undefined {
+  const settings = loadSettings();
+  return settings.llm?.modes?.[mode];
+}
+
+export function getAdvisorSettings(): ChorusAdvisorSettings | undefined {
+  return loadSettings().llm?.advisor;
+}
+
+export function isAdvisorEnabled(): boolean {
+  return loadSettings().llm?.advisor?.enabled ?? false;
 }
 
 export function clearSettingsCache(): void {

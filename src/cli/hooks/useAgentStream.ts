@@ -151,7 +151,7 @@ export function useAgentStream({
       onTokensUpdate(tokenCount);
 
       const contextLimit = getContextLimit();
-      if (shouldCompact(messagesRef.current, effectiveSystemPrompt, contextLimit)) {
+      if (await shouldCompact(messagesRef.current, effectiveSystemPrompt, contextLimit)) {
         dispatch({
           type: "APPEND_SYSTEM",
           id: `compact-${Date.now()}`,

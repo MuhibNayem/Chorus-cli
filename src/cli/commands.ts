@@ -1,6 +1,7 @@
 import type { Dispatch } from "react";
 import type { FeedAction } from "./state/feedReducer.js";
 import { sessionManager } from "../session/manager.js";
+import { loadSettings, getModeModelConfig } from "../settings/storage.js";
 import type { ApprovalPolicy, ExecutionMode } from "../harness/types.js";
 import { describeApprovalPolicy } from "./hooks/agent/toolPolicy.js";
 
@@ -18,10 +19,12 @@ export interface CommandContext {
   showResumeSelect?: () => void;
   showDefaultModelSelect?: () => void;
   showAgents?: () => void;
+  showModeModelSelect?: (mode: "build" | "plan") => void;
   getExecutionMode?: () => ExecutionMode;
   setExecutionMode?: (mode: ExecutionMode) => void;
   getApprovalPolicy?: () => ApprovalPolicy;
   setApprovalPolicy?: (policy: ApprovalPolicy) => void;
+  setAdvisorEnabled?: (enabled: boolean) => void;
 }
 
 export interface SlashCommand {
@@ -47,6 +50,9 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: "/sessions",      description: "List sessions for this workspace" },
   { name: "/session",       description: "Show current session info" },
   { name: "/resume",        description: "Resume a past session (interactive)" },
+  { name: "/build-model",   description: "Set model for Build mode (interactive)" },
+  { name: "/plan-model",    description: "Set model for Plan mode (interactive)" },
+  { name: "/advisor",       description: "Toggle advisor: on | off | status" },
   { name: "/session-new",   description: "Start a fresh session" },
   { name: "/exit",          description: "Exit the CLI" },
 ];
@@ -160,13 +166,19 @@ export function handleSlashCommand(
       ctx.dispatch({ type: "APPEND_SYSTEM", id, text: "Build Mode enabled. I can make scoped edits, run checks, review diffs, and finalize changes." });
       return true;
 
-    case "/mode":
-      ctx.dispatch({
-        type: "APPEND_SYSTEM",
-        id,
-        text: `Execution mode: ${ctx.getExecutionMode?.() ?? "build"}\nApproval policy: ${describeApprovalPolicy(ctx.getApprovalPolicy?.() ?? "auto_edit")}`,
-      });
+    case "/mode": {
+      const mode = ctx.getExecutionMode?.() ?? "build";
+      const buildCfg = getModeModelConfig("build");
+      const planCfg = getModeModelConfig("plan");
+      const lines = [
+        `Execution mode: ${mode}`,
+        `Approval policy: ${describeApprovalPolicy(ctx.getApprovalPolicy?.() ?? "auto_edit")}`,
+      ];
+      if (buildCfg) lines.push(`Build model: ${buildCfg.provider}:${buildCfg.model}`);
+      if (planCfg) lines.push(`Plan model: ${planCfg.provider}:${planCfg.model}`);
+      ctx.dispatch({ type: "APPEND_SYSTEM", id, text: lines.join("\n") });
       return true;
+    }
 
     case "/approval": {
       const normalized = argRaw?.replace("-", "_") as ApprovalPolicy | undefined;
@@ -191,6 +203,34 @@ export function handleSlashCommand(
       ctx.onNewSession();
       ctx.dispatch({ type: "APPEND_SYSTEM", id, text: "Started a new session." });
       return true;
+
+    case "/build-model":
+      ctx.showModeModelSelect?.("build");
+      return true;
+
+    case "/plan-model":
+      ctx.showModeModelSelect?.("plan");
+      return true;
+
+    case "/advisor": {
+      const arg = argRaw?.toLowerCase();
+      if (arg === "on") {
+        ctx.setAdvisorEnabled?.(true);
+        ctx.dispatch({ type: "APPEND_SYSTEM", id, text: "Advisor enabled. A senior reviewer will check plans before execution." });
+        return true;
+      }
+      if (arg === "off") {
+        ctx.setAdvisorEnabled?.(false);
+        ctx.dispatch({ type: "APPEND_SYSTEM", id, text: "Advisor disabled. Plans will go straight to execution." });
+        return true;
+      }
+      const advisorSettings = loadSettings().llm?.advisor;
+      const status = advisorSettings?.enabled
+        ? `Advisor: ON  (${advisorSettings.provider ?? "default"}:${advisorSettings.model ?? "default"})`
+        : "Advisor: OFF";
+      ctx.dispatch({ type: "APPEND_SYSTEM", id, text: `${status}\nUsage: /advisor on | off` });
+      return true;
+    }
 
     case "/exit":
       ctx.exit();
