@@ -7,10 +7,10 @@ export function buildExecutionProtocol(
 ): ExecutionProtocol {
   const stages: ExecutionStage[] = ["classified"];
 
-  if (route.requiresResearch) stages.push("inspected");
+  if (route.requiresResearch || mode === "plan") stages.push("inspected");
   if (mode === "plan" || route.kind === "project_phase" || route.path === "research_then_plan_path") stages.push("planned");
   if (mode === "build" && route.kind !== "inspect_only" && route.kind !== "answer_only") {
-    stages.push("edited", "verified", "reviewed");
+    stages.push("inspected", "planned", "edited", "verified", "reviewed");
   }
   stages.push("finalized");
 

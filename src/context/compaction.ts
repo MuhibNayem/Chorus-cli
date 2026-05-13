@@ -1,6 +1,9 @@
 import { countTokens, countMessagesTokens } from "./tokenizer.js";
 import { getDefaultProvider, getSummaryModelForProvider } from "../llm/index.js";
 
+export const COMPACTION_THRESHOLD = 100_000;
+export const KEEP_RECENT_TOKENS = 22_000;
+
 const COMPACTION_RATIO = 0.75;
 const KEEP_RECENT_RATIO = 0.22;
 
@@ -19,10 +22,11 @@ export interface CompactionResult {
 export function shouldCompact(
   messages: Array<{ role: string; content: string; reasoning_content?: string }>,
   systemPrompt: string,
-  contextWindow: number = 128_000
+  contextWindow?: number
 ): boolean {
+  const threshold = contextWindow ?? COMPACTION_THRESHOLD;
   const tokens = countMessagesTokens(messages, systemPrompt);
-  return tokens >= getThresholds(contextWindow).threshold;
+  return tokens >= getThresholds(threshold).threshold;
 }
 
 function selectRecentMessages(
@@ -67,9 +71,9 @@ function selectRecentMessages(
 export async function compactMessages(
   messages: Array<{ role: string; content: string; reasoning_content?: string }>,
   systemPrompt: string,
-  contextWindow: number = 128_000
+  contextWindow?: number
 ): Promise<CompactionResult> {
-  const { keepRecent } = getThresholds(contextWindow);
+  const { keepRecent } = getThresholds(contextWindow ?? COMPACTION_THRESHOLD);
   const originalCount = countMessagesTokens(messages, systemPrompt);
 
   const { recentMessages, olderMessages } = selectRecentMessages(messages, keepRecent);
@@ -110,4 +114,25 @@ Provide a single summary paragraph.`;
   };
 }
 
+export async function trimToWindow(
+  messages: Array<{ role: string; content: string; reasoning_content?: string }>,
+  systemPrompt: string,
+  budget?: number
+): Promise<Array<{ role: string; content: string; reasoning_content?: string }>> {
+  const targetBudget = budget ?? KEEP_RECENT_TOKENS;
+  let currentTokens = countMessagesTokens(messages, systemPrompt);
+  if (currentTokens <= targetBudget) return messages;
+
+  const result = [...messages];
+  // Drop oldest non-system messages until under budget
+  for (let i = 0; i < result.length && currentTokens > targetBudget; i++) {
+    if (result[i].role === "system") continue;
+    const msgText = `${result[i].role}: ${result[i].content}`;
+    const msgTokens = countTokens(msgText);
+    result.splice(i, 1);
+    currentTokens -= msgTokens;
+    i--; // adjust index after removal
+  }
+  return result;
+}
 

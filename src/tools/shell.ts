@@ -141,6 +141,24 @@ function getDisallowedFlag(base: string, args: string[]): string | null {
   return null;
 }
 
+function isDependencyMutation(base: string, args: string[]): boolean {
+  const depCommands: Record<string, string[]> = {
+    npm: ["install", "i", "add", "ci", "update", "upgrade", "remove", "uninstall", "prune"],
+    yarn: ["add", "install", "remove", "upgrade", "upgrade-interactive"],
+    pnpm: ["add", "install", "remove", "update", "upgrade"],
+    bun: ["add", "install", "remove", "update", "upgrade"],
+    pip: ["install", "uninstall", "freeze", "sync"],
+    pip3: ["install", "uninstall", "freeze", "sync"],
+    cargo: ["add", "remove", "update", "install"],
+    gem: ["install", "uninstall", "update"],
+    bundle: ["install", "update", "add", "remove"],
+    composer: ["install", "update", "require", "remove"],
+  };
+  const subcommands = depCommands[base];
+  if (!subcommands) return false;
+  return subcommands.includes(args[0] ?? "");
+}
+
 /**
  * Returns an error string if the command references any paths outside WORKSPACE,
  * or null if the command is safe to run.
@@ -246,6 +264,13 @@ export const ExecuteTool = tool(
     if (!safety.ok) {
       auditCommand({ command, allowed: false, reason: safety.reason });
       return safety.reason ?? "Blocked by command safety policy.";
+    }
+
+    // Block dependency mutation commands
+    if (isDependencyMutation(base, args)) {
+      const reason = "Blocked dependency mutation command";
+      auditCommand({ command, allowed: false, reason });
+      return `${reason}: ${base} ${args[0] ?? ""} mutates node_modules or lockfiles. Run this manually if needed.`;
     }
 
     const pathError = validateWorkspacePaths(tokens);
