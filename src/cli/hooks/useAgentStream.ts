@@ -7,8 +7,9 @@ import { allTools } from "../../tools/index.js";
 import { allSubagents } from "../../subagents/index.js";
 import { SYSTEM_PROMPT } from "../../prompts/system.js";
 import { countMessagesTokens } from "../../context/tokenizer.js";
-import { shouldCompact, compactMessages } from "../../context/compaction.js";
+import { shouldCompact, compactMessages, trimToWindow, COMPACTION_THRESHOLD } from "../../context/compaction.js";
 import { sessionManager } from "../../session/manager.js";
+import { estimateCost } from "../../llm/pricing.js";
 import type { FeedAction } from "../state/feedReducer.js";
 
 const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL ?? "http://localhost:11434";
@@ -35,10 +36,18 @@ interface UseAgentStreamOptions {
 
 export function useAgentStream({ dispatch, onTokensUpdate, initialMessages }: UseAgentStreamOptions) {
   const messagesRef = useRef<Message[]>(initialMessages ?? []);
+  const abortControllerRef = useRef<AbortController | null>(null);
+
+  const cancel = useCallback(() => {
+    abortControllerRef.current?.abort();
+  }, []);
 
   const submit = useCallback(
     async (text: string) => {
       dbg("SUBMIT", { text: text.slice(0, 80) });
+
+      const abortController = new AbortController();
+      abortControllerRef.current = abortController;
 
       const userId = `user-${Date.now()}`;
       dispatch({ type: "APPEND_USER", id: userId, text });
@@ -49,10 +58,14 @@ export function useAgentStream({ dispatch, onTokensUpdate, initialMessages }: Us
 
       if (await shouldCompact(messagesRef.current, SYSTEM_PROMPT)) {
         const result = await compactMessages(messagesRef.current, SYSTEM_PROMPT);
-        messagesRef.current = [
+        let compacted: Array<{ role: string; content: string }> = [
           { role: "system", content: `[Previous conversation summary: ${result.summary}]` },
           ...messagesRef.current.slice(-20),
         ];
+        // If still over 75% of threshold after compaction, progressively drop oldest messages
+        const budget = Math.floor(COMPACTION_THRESHOLD * 0.75);
+        compacted = await trimToWindow(compacted, SYSTEM_PROMPT, budget);
+        messagesRef.current = compacted;
         onTokensUpdate(result.compressedCount);
       }
 
@@ -84,17 +97,22 @@ Node version: ${process.version}
         const stream = await agent.stream(
           { messages: messagesRef.current as any },
           {
-            streamMode: ["messages", "updates"],
+            streamMode: ["messages", "updates"] as const,
             configurable: { thread_id: sessionManager.getCurrent()?.id },
+            signal: abortController.signal,
           } as any,
         );
         dbg("STREAM_OPENED", { msgCount: messagesRef.current.length });
 
         const dispatchedToolIds = new Set<string>();
         let lastAIMsg: any        = null;
+        let responseTextFromStream = "";
         let thinkingDispatched    = false;
+        let totalInputTokens      = 0;
+        let totalOutputTokens     = 0;
 
         for await (const rawChunk of stream) {
+          if (abortController.signal.aborted) break;
           const [mode, data] = rawChunk as unknown as [string, unknown];
 
           // ── per-token streaming ─────────────────────────────────────────
@@ -110,6 +128,7 @@ Node version: ${process.version}
             if (isAIChunk) {
               const content = typeof msg.content === "string" ? msg.content : "";
               if (content) {
+                responseTextFromStream += content;
                 dispatch({ type: "APPEND_RESPONSE_TOKEN", text: content });
                 dbg("TOKEN", { len: content.length });
               }
@@ -122,6 +141,13 @@ Node version: ${process.version}
                 dispatch({ type: "APPEND_THINK_TOKEN", text: thinking });
                 dbg("THINK_TOKEN", { len: thinking.length });
               }
+
+              // Collect token usage from LangChain response_metadata (Ollama/OpenAI)
+              const meta = msg.response_metadata ?? msg.usage_metadata ?? {};
+              const inp = meta.prompt_eval_count ?? meta.input_tokens ?? meta.prompt_tokens ?? 0;
+              const out = meta.eval_count ?? meta.output_tokens ?? meta.completion_tokens ?? 0;
+              if (inp) totalInputTokens  = Math.max(totalInputTokens,  inp);
+              if (out) totalOutputTokens = Math.max(totalOutputTokens, out);
             }
 
             const isToolMsg = msgType === "ToolMessage" || msgType === "tool";
@@ -159,7 +185,11 @@ Node version: ${process.version}
                 if (isAI) {
                   lastAIMsg = msg;
 
-                  const toolCalls: any[] = msg.tool_calls ?? [];
+                  // Bug 1.2 fix: also scan additional_kwargs.tool_calls for Ollama
+                  const toolCalls: any[] = [
+                    ...(msg.tool_calls ?? []),
+                    ...(msg.additional_kwargs?.tool_calls ?? []),
+                  ];
                   for (const tc of toolCalls) {
                     const tcId: string = tc.id ?? `tc-${Date.now()}`;
                     if (dispatchedToolIds.has(tcId)) continue;
@@ -192,9 +222,24 @@ Node version: ${process.version}
           }
         }
 
+        if (abortController.signal.aborted) {
+          dispatch({ type: "FINALIZE_TURN" });
+          dispatch({
+            type:    "SET_ERROR",
+            id:      `cancelled-${Date.now()}`,
+            message: "Cancelled by user.",
+          });
+          return;
+        }
+
         dbg("STREAM_DONE", { hadAIMsg: !!lastAIMsg });
 
-        const responseText = (lastAIMsg?.content ?? "").trim() as string;
+        // Bug 1.1 fix: prefer streamed tokens; fall back to updates-mode content
+        const aiMessageContent = typeof lastAIMsg?.content === "string"
+          ? lastAIMsg.content.replace(/<think>[\s\S]*?<\/think>/g, "").trim()
+          : "";
+        const responseText = (responseTextFromStream || aiMessageContent).trim();
+
         if (responseText) {
           messagesRef.current.push({ role: "assistant", content: responseText });
         }
@@ -205,9 +250,27 @@ Node version: ${process.version}
         const finalCount = await countMessagesTokens(messagesRef.current, SYSTEM_PROMPT);
         onTokensUpdate(finalCount);
 
+        if (totalInputTokens > 0 || totalOutputTokens > 0) {
+          dispatch({
+            type:         "ADD_USAGE",
+            inputTokens:  totalInputTokens,
+            outputTokens: totalOutputTokens,
+            cost:         estimateCost(MODEL_NAME, totalInputTokens, totalOutputTokens),
+          });
+        }
+
         dispatch({ type: "FINALIZE_TURN" });
 
       } catch (err) {
+        if (err instanceof Error && err.name === "AbortError") {
+          dispatch({ type: "FINALIZE_TURN" });
+          dispatch({
+            type:    "SET_ERROR",
+            id:      `cancelled-${Date.now()}`,
+            message: "Cancelled by user.",
+          });
+          return;
+        }
         const errMsg = err instanceof Error ? err.message : String(err);
         dbg("ERROR", { message: errMsg, stack: err instanceof Error ? err.stack : undefined });
         dispatch({
@@ -222,11 +285,12 @@ Node version: ${process.version}
 
   const clearHistory = useCallback(() => {
     messagesRef.current = [];
+    abortControllerRef.current = null;
   }, []);
 
   const loadSession = useCallback((msgs: Message[]) => {
     messagesRef.current = msgs;
   }, []);
 
-  return { submit, clearHistory, loadSession };
+  return { submit, clearHistory, loadSession, cancel };
 }

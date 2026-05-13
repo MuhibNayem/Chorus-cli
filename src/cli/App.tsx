@@ -2,6 +2,7 @@ import { useReducer, useState, useCallback, useEffect, useMemo, useRef } from "r
 import { Box, useApp, useInput } from "ink";
 import { globSync } from "glob";
 import * as fs from "fs";
+import * as os from "os";
 import * as path from "path";
 import { Feed } from "./components/Feed.js";
 import { InputBox } from "./components/InputBox.js";
@@ -29,6 +30,13 @@ function loadWorkspaceFiles(): string[] {
   }
 }
 
+const SECRET_PATTERNS = [/\.env(\.|$)/i, /credentials/i, /secret/i, /\.pem$/i, /\.key$/i, /\.pfx$/i, /\.p12$/i, /id_rsa/i, /id_ed25519/i];
+
+function isSecretFile(filePath: string): boolean {
+  const base = path.basename(filePath);
+  return SECRET_PATTERNS.some((p) => p.test(base));
+}
+
 // Expand @mention tokens to file content blocks
 function expandMentions(text: string, workspaceFiles: string[]): string {
   const mentionRe = /@([\w./\\-]+)/g;
@@ -41,6 +49,10 @@ function expandMentions(text: string, workspaceFiles: string[]): string {
       (f) => f === mention || f.endsWith(`/${mention}`) || path.basename(f) === mention
     );
     if (!found) continue;
+    if (isSecretFile(found)) {
+      expanded = expanded.replace(match[0], `@${found} [blocked: likely secret file]`);
+      continue;
+    }
     const absPath = path.join(WORKSPACE, found);
     try {
       const content = fs.readFileSync(absPath, "utf-8");
@@ -54,6 +66,20 @@ function expandMentions(text: string, workspaceFiles: string[]): string {
   return expanded;
 }
 
+const HISTORY_PATH = path.join(os.homedir(), ".chorus", "input-history.json");
+const HISTORY_MAX = 500;
+
+function loadHistory(): string[] {
+  try { return JSON.parse(fs.readFileSync(HISTORY_PATH, "utf-8")) as string[]; } catch { return []; }
+}
+
+function saveHistory(history: string[]): void {
+  try {
+    fs.mkdirSync(path.dirname(HISTORY_PATH), { recursive: true });
+    fs.writeFileSync(HISTORY_PATH, JSON.stringify(history.slice(0, HISTORY_MAX)), { mode: 0o600 });
+  } catch { /* non-fatal */ }
+}
+
 export function App() {
   const { exit }              = useApp();
   const [feedState, dispatch] = useReducer(feedReducer, initialFeedState);
@@ -65,12 +91,34 @@ export function App() {
   const prevLenRef = useRef(0);
   const tokensRef = useRef(0);
   const workspaceFiles = useRef<string[]>([]);
+  const inputHistoryRef = useRef<string[]>([]);
+  const historyIndexRef = useRef(-1);
 
   useEffect(() => {
     workspaceFiles.current = loadWorkspaceFiles();
+    inputHistoryRef.current = loadHistory();
   }, []);
 
   useEffect(() => { tokensRef.current = tokens; }, [tokens]);
+
+  const onHistoryUp = useCallback(() => {
+    const history = inputHistoryRef.current;
+    if (history.length === 0) return;
+    const nextIdx = Math.min(historyIndexRef.current + 1, history.length - 1);
+    historyIndexRef.current = nextIdx;
+    setInputValue(history[nextIdx]);
+  }, []);
+
+  const onHistoryDown = useCallback(() => {
+    const nextIdx = historyIndexRef.current - 1;
+    if (nextIdx < 0) {
+      historyIndexRef.current = -1;
+      setInputValue("");
+    } else {
+      historyIndexRef.current = nextIdx;
+      setInputValue(inputHistoryRef.current[nextIdx]);
+    }
+  }, []);
 
   // Last turn entry (live or completed)
   const lastTurn = useMemo(() => {
@@ -81,16 +129,14 @@ export function App() {
     return null;
   }, [feedState.entries]);
 
-  // Tool calls first (in stream order), then thinking blocks — matches AgentTurn order
   const expandableIds = useMemo(() => {
     if (!lastTurn || lastTurn.kind !== "turn") return [];
-    const toolIds: string[] = [];
-    const thinkIds: string[] = [];
-    for (const ev of lastTurn.events) {
-      if (ev.kind === "tool" && ev.card.status !== "running") toolIds.push(ev.card.id);
-      if (ev.kind === "thinking" && ev.text) thinkIds.push(ev.id);
+    const ids: string[] = [];
+    for (const tc of lastTurn.toolCalls) {
+      if (tc.status !== "running") ids.push(tc.id);
     }
-    return [...toolIds, ...thinkIds];
+    if (lastTurn.thinking.text) ids.push(`${lastTurn.id}-thinking`);
+    return ids;
   }, [lastTurn]);
 
   useEffect(() => {
@@ -132,8 +178,12 @@ export function App() {
   useInput((_input, key) => {
     if (key.ctrl && _input === "c") exit();
 
-    // Escape: dismiss suggestions
+    // Escape: cancel in-progress stream, or dismiss suggestions
     if (key.escape) {
+      if (feedState.processing) {
+        cancel();
+        return;
+      }
       setSuggestionIndex(-1);
       return;
     }
@@ -175,7 +225,7 @@ export function App() {
 
   const currentSession = sessionManager.getCurrent();
 
-  const { submit, clearHistory, loadSession } = useAgentStream({
+  const { submit, clearHistory, loadSession, cancel } = useAgentStream({
     dispatch,
     onTokensUpdate: setTokens,
     initialMessages: currentSession?.messages,
@@ -239,6 +289,15 @@ export function App() {
         return;
       }
 
+      // Push to input history (deduplicate at top)
+      const history = inputHistoryRef.current;
+      if (history[0] !== trimmed) {
+        history.unshift(trimmed);
+        if (history.length > HISTORY_MAX) history.length = HISTORY_MAX;
+        saveHistory(history);
+      }
+      historyIndexRef.current = -1;
+
       setInputValue("");
       setSuggestionIndex(-1);
       setIsPastePreviewed(false);
@@ -250,6 +309,12 @@ export function App() {
         clearHistory,
         getTokens: () => tokensRef.current,
         getModel: () => MODEL_NAME,
+        getCost: () => ({
+          totalCost: feedState.totalCost,
+          totalInputTokens: feedState.totalInputTokens,
+          totalOutputTokens: feedState.totalOutputTokens,
+        }),
+        getFeedEntries: () => feedState.entries,
         exit,
         onResumeSession,
         onNewSession,
@@ -268,9 +333,7 @@ export function App() {
     for (let i = feedState.entries.length - 1; i >= 0; i--) {
       const e = feedState.entries[i];
       if (e.kind === "turn" && !e.done) {
-        const hasRunningTool = e.events.some(
-          (ev) => ev.kind === "tool" && ev.card.status === "running"
-        );
+        const hasRunningTool = e.toolCalls.some((tc) => tc.status === "running");
         return hasRunningTool ? "tool" : "thinking";
       }
     }
@@ -298,8 +361,10 @@ export function App() {
         disabled={feedState.processing}
         isPastePreviewed={isPastePreviewed}
         onDismissPaste={() => setIsPastePreviewed(false)}
+        onHistoryUp={onHistoryUp}
+        onHistoryDown={onHistoryDown}
       />
-      <StatusBar tokens={tokens} agentState={agentState} sessionName={sessionManager.getCurrent()?.name} />
+      <StatusBar tokens={tokens} agentState={agentState} sessionName={sessionManager.getCurrent()?.name} totalCost={feedState.totalCost} />
     </Box>
   );
 }

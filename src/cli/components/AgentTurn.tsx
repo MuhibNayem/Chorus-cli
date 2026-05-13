@@ -13,27 +13,20 @@ interface AgentTurnProps {
   focusedId?: string | null;
 }
 
-export function AgentTurn({ entry, onToggle, isLive = false, focusedId = null }: AgentTurnProps) {
-  // Collect expandable item ids in stream order (tool calls first, then thinking)
-  // This must match App.tsx expandableIds order
+export function AgentTurn({ entry, onToggle: _onToggle, isLive = false, focusedId = null }: AgentTurnProps) {
   const expandableIds: string[] = [];
-  for (const ev of entry.events) {
-    if (ev.kind === "tool" && ev.card.status !== "running") expandableIds.push(ev.card.id);
+  for (const tc of entry.toolCalls) {
+    if (tc.status !== "running") expandableIds.push(tc.id);
   }
-  for (const ev of entry.events) {
-    if (ev.kind === "thinking" && ev.text) expandableIds.push(ev.id);
-  }
+  if (entry.thinking.text) expandableIds.push(`${entry.id}-thinking`);
 
-  // Determine which event is currently "active" (being streamed right now)
-  const lastEvent = entry.events[entry.events.length - 1];
-  const isLastThinkingActive = !entry.done && lastEvent?.kind === "thinking";
-  const isStreamingResponse = !entry.done && lastEvent?.kind === "response";
-
+  const responseText = entry.tokens.join("");
+  const isStreamingResponse = !entry.done && responseText.length > 0;
   const cursor = useCursor(isStreamingResponse);
+  const isThinkingActive = !entry.done && !isStreamingResponse && entry.toolCalls.every((tc) => tc.status !== "running");
 
   return (
     <Box flexDirection="column" marginBottom={1}>
-      {/* Turn header */}
       <Box flexDirection="row">
         <Text color="green" bold>{"● "}</Text>
         <Text color="grey" dimColor>{"agent"}</Text>
@@ -42,49 +35,29 @@ export function AgentTurn({ entry, onToggle, isLive = false, focusedId = null }:
         )}
       </Box>
 
-      {/* Events in stream order */}
-      {entry.events.map((ev, i) => {
-        if (ev.kind === "thinking") {
-          const isActive = isLastThinkingActive && i === entry.events.length - 1;
-          return (
-            <ThinkingBlock
-              key={ev.id}
-              event={ev}
-              focused={focusedId === ev.id}
-              isActive={isActive}
-            />
-          );
-        }
+      {entry.thinking.text && (
+        <ThinkingBlock
+          thinking={entry.thinking}
+          turnId={entry.id}
+          focused={focusedId === `${entry.id}-thinking`}
+          isActive={isThinkingActive}
+        />
+      )}
 
-        if (ev.kind === "tool") {
-          return (
-            <ToolCard
-              key={ev.card.id}
-              card={ev.card}
-              focused={focusedId === ev.card.id}
-            />
-          );
-        }
+      {entry.toolCalls.map((tc) => (
+        <ToolCard key={tc.id} card={tc} focused={focusedId === tc.id} />
+      ))}
 
-        if (ev.kind === "response") {
-          const text = ev.tokens.join("");
-          const isLastEvent = i === entry.events.length - 1;
-          if (!text) return null;
-          return (
-            <Box key={`resp-${i}`} marginLeft={2}>
-              <Text wrap="wrap">
-                {text}
-                {isStreamingResponse && isLastEvent ? cursor : ""}
-              </Text>
-            </Box>
-          );
-        }
+      {responseText && (
+        <Box marginLeft={2}>
+          <Text wrap="wrap">
+            {responseText}
+            {isStreamingResponse ? cursor : ""}
+          </Text>
+        </Box>
+      )}
 
-        return null;
-      })}
-
-      {/* Initial waiting indicator — nothing has streamed yet */}
-      {isLive && entry.events.length === 0 && (
+      {isLive && responseText.length === 0 && entry.toolCalls.length === 0 && !entry.thinking.text && (
         <WaitingIndicator />
       )}
     </Box>
