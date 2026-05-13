@@ -9,36 +9,25 @@ export type ToolCard = {
   expanded: boolean;
 };
 
-/** Ordered timeline of events within a single agent turn */
-export type ThinkingEvent = {
-  kind: "thinking";
-  id: string;
+export type ThinkingState = {
   text: string;
   expanded: boolean;
   durationMs?: number;
 };
 
-export type ToolEvent = {
-  kind: "tool";
-  card: ToolCard;
-};
-
-export type ResponseEvent = {
-  kind: "response";
+export type TurnEntry = {
+  kind: "turn";
+  id: string;
   tokens: string[];
+  toolCalls: ToolCard[];
+  thinking: ThinkingState;
+  done: boolean;
+  startedAt: number;
 };
-
-export type TurnEvent = ThinkingEvent | ToolEvent | ResponseEvent;
 
 export type FeedEntry =
   | { kind: "user"; id: string; text: string }
-  | {
-      kind: "turn";
-      id: string;
-      events: TurnEvent[];
-      done: boolean;
-      startedAt: number;
-    }
+  | TurnEntry
   | { kind: "error"; id: string; message: string }
   | { kind: "system"; id: string; text: string };
 
@@ -55,23 +44,30 @@ export type FeedAction =
   | { type: "TOGGLE_EXPANDED"; id: string }
   | { type: "SET_ERROR"; id: string; message: string }
   | { type: "APPEND_SYSTEM"; id: string; text: string }
-  | { type: "CLEAR_FEED" };
+  | { type: "CLEAR_FEED" }
+  | { type: "ADD_USAGE"; inputTokens: number; outputTokens: number; cost: number };
 
 export interface FeedState {
   entries: FeedEntry[];
   processing: boolean;
+  totalCost: number;
+  totalInputTokens: number;
+  totalOutputTokens: number;
 }
 
 export const initialFeedState: FeedState = {
   entries: [],
   processing: false,
+  totalCost: 0,
+  totalInputTokens: 0,
+  totalOutputTokens: 0,
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function mapActiveTurn(
   entries: FeedEntry[],
-  fn: (turn: Extract<FeedEntry, { kind: "turn" }>) => Extract<FeedEntry, { kind: "turn" }>
+  fn: (turn: TurnEntry) => TurnEntry
 ): FeedEntry[] {
   return entries.map((e) => (e.kind === "turn" && !e.done ? fn(e) : e));
 }
@@ -82,10 +78,12 @@ export function feedReducer(state: FeedState, action: FeedAction): FeedState {
   switch (action.type) {
     case "APPEND_USER": {
       const userEntry: FeedEntry = { kind: "user", id: action.id, text: action.text };
-      const turnEntry: FeedEntry = {
+      const turnEntry: TurnEntry = {
         kind: "turn",
         id: `turn-${action.id}`,
-        events: [],
+        tokens: [],
+        toolCalls: [],
+        thinking: { text: "", expanded: false },
         done: false,
         startedAt: Date.now(),
       };
@@ -96,7 +94,6 @@ export function feedReducer(state: FeedState, action: FeedAction): FeedState {
       };
     }
 
-    // User message only — no accompanying agent turn (used for slash commands)
     case "APPEND_USER_MSG": {
       return {
         ...state,
@@ -107,48 +104,33 @@ export function feedReducer(state: FeedState, action: FeedAction): FeedState {
     case "APPEND_THINK_TOKEN": {
       return {
         ...state,
-        entries: mapActiveTurn(state.entries, (turn) => {
-          const last = turn.events[turn.events.length - 1];
-          if (last?.kind === "thinking") {
-            // Append to the current thinking segment
-            const updated: ThinkingEvent = { ...last, text: last.text + action.text, expanded: true };
-            return { ...turn, events: [...turn.events.slice(0, -1), updated] };
-          }
-          // New thinking segment
-          const ev: ThinkingEvent = {
-            kind: "thinking",
-            id: `${turn.id}-think-${turn.events.length}`,
-            text: action.text,
-            expanded: true,
-          };
-          return { ...turn, events: [...turn.events, ev] };
-        }),
+        entries: mapActiveTurn(state.entries, (turn) => ({
+          ...turn,
+          thinking: {
+            ...turn.thinking,
+            text: turn.thinking.text + action.text,
+          },
+        })),
       };
     }
 
     case "APPEND_RESPONSE_TOKEN": {
       return {
         ...state,
-        entries: mapActiveTurn(state.entries, (turn) => {
-          const last = turn.events[turn.events.length - 1];
-          if (last?.kind === "response") {
-            const updated: ResponseEvent = { ...last, tokens: [...last.tokens, action.text] };
-            return { ...turn, events: [...turn.events.slice(0, -1), updated] };
-          }
-          const ev: ResponseEvent = { kind: "response", tokens: [action.text] };
-          return { ...turn, events: [...turn.events, ev] };
-        }),
+        entries: mapActiveTurn(state.entries, (turn) => ({
+          ...turn,
+          tokens: [...turn.tokens, action.text],
+        })),
       };
     }
 
     case "ADD_TOOL_CALL": {
       return {
         ...state,
-        entries: mapActiveTurn(state.entries, (turn) => {
-          const card: ToolCard = { ...action.toolCall, expanded: false };
-          const ev: ToolEvent = { kind: "tool", card };
-          return { ...turn, events: [...turn.events, ev] };
-        }),
+        entries: mapActiveTurn(state.entries, (turn) => ({
+          ...turn,
+          toolCalls: [...turn.toolCalls, { ...action.toolCall, expanded: false }],
+        })),
       };
     }
 
@@ -157,13 +139,11 @@ export function feedReducer(state: FeedState, action: FeedAction): FeedState {
         ...state,
         entries: mapActiveTurn(state.entries, (turn) => ({
           ...turn,
-          events: turn.events.map((ev) => {
-            if (ev.kind !== "tool" || ev.card.id !== action.id) return ev;
-            return {
-              ...ev,
-              card: { ...ev.card, result: action.result, status: action.status },
-            };
-          }),
+          toolCalls: turn.toolCalls.map((tc) =>
+            tc.id === action.id
+              ? { ...tc, result: action.result, status: action.status }
+              : tc
+          ),
         })),
       };
     }
@@ -175,32 +155,39 @@ export function feedReducer(state: FeedState, action: FeedAction): FeedState {
         entries: state.entries.map((e) => {
           if (e.kind !== "turn" || e.done) return e;
           const elapsed = Date.now() - e.startedAt;
-          const events = e.events.map((ev): TurnEvent => {
-            if (ev.kind === "thinking") {
-              return { ...ev, expanded: false, durationMs: elapsed };
-            }
-            return ev;
-          });
-          return { ...e, done: true, events };
+          return {
+            ...e,
+            done: true,
+            thinking: {
+              ...e.thinking,
+              expanded: false,
+              durationMs: elapsed,
+            },
+          };
         }),
       };
     }
 
     case "TOGGLE_EXPANDED": {
+      const thinkingSuffix = "-thinking";
       return {
         ...state,
         entries: state.entries.map((e) => {
           if (e.kind !== "turn") return e;
-          const events = e.events.map((ev): TurnEvent => {
-            if (ev.kind === "thinking" && ev.id === action.id) {
-              return { ...ev, expanded: !ev.expanded };
-            }
-            if (ev.kind === "tool" && ev.card.id === action.id) {
-              return { ...ev, card: { ...ev.card, expanded: !ev.card.expanded } };
-            }
-            return ev;
-          });
-          return { ...e, events };
+          if (action.id === `${e.id}${thinkingSuffix}`) {
+            return {
+              ...e,
+              thinking: { ...e.thinking, expanded: !e.thinking.expanded },
+            };
+          }
+          const idx = e.toolCalls.findIndex((tc) => tc.id === action.id);
+          if (idx !== -1) {
+            const updated = e.toolCalls.map((tc) =>
+              tc.id === action.id ? { ...tc, expanded: !tc.expanded } : tc
+            );
+            return { ...e, toolCalls: updated };
+          }
+          return e;
         }),
       };
     }
@@ -222,6 +209,15 @@ export function feedReducer(state: FeedState, action: FeedAction): FeedState {
 
     case "CLEAR_FEED": {
       return { ...state, entries: [] };
+    }
+
+    case "ADD_USAGE": {
+      return {
+        ...state,
+        totalInputTokens:  state.totalInputTokens  + action.inputTokens,
+        totalOutputTokens: state.totalOutputTokens + action.outputTokens,
+        totalCost:         state.totalCost         + action.cost,
+      };
     }
 
     default:

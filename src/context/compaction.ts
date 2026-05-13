@@ -1,6 +1,7 @@
 import { countTokens, countMessagesTokens } from "./tokenizer";
 import { streamOllama } from "../ollama/client";
 import { buildSubagentPrompt } from "../prompts/system";
+import { withRetry } from "../llm/retry";
 
 const COMPACTION_THRESHOLD = 100_000;
 const KEEP_RECENT_TOKENS = 28_000;
@@ -39,20 +40,22 @@ Provide a single summary paragraph.`;
 
   let summary = "";
 
-  await new Promise<void>((resolve, reject) => {
-    streamOllama({
-      baseUrl: OLLAMA_BASE_URL,
-      model: SUMMARIZE_MODEL,
-      systemPrompt: buildSubagentPrompt("planner"),
-      messages: [{ role: "user", content: summaryPrompt }],
-      onThink: () => {},
-      onResponse: (text) => {
-        summary += text;
-      },
-      onComplete: () => resolve(),
-      onError: reject,
-    });
-  });
+  await withRetry(
+    () =>
+      new Promise<void>((resolve, reject) => {
+        streamOllama({
+          baseUrl: OLLAMA_BASE_URL,
+          model: SUMMARIZE_MODEL,
+          systemPrompt: buildSubagentPrompt("planner"),
+          messages: [{ role: "user", content: summaryPrompt }],
+          onThink: () => {},
+          onResponse: (text) => { summary += text; },
+          onComplete: () => resolve(),
+          onError: reject,
+        });
+      }),
+    { maxAttempts: 3, baseDelayMs: 1_000 }
+  );
 
   const compressedMessages: Array<{ role: string; content: string }> = [
     { role: "system", content: `[Previous conversation summary: ${summary}]` },
@@ -69,3 +72,20 @@ Provide a single summary paragraph.`;
 }
 
 export { COMPACTION_THRESHOLD, KEEP_RECENT_TOKENS };
+
+// Trims messages until token count is below `maxTokens`, dropping oldest non-system messages first.
+export async function trimToWindow(
+  messages: Array<{ role: string; content: string }>,
+  systemPrompt: string,
+  maxTokens: number
+): Promise<Array<{ role: string; content: string }>> {
+  let current = [...messages];
+  let count = await countMessagesTokens(current, systemPrompt);
+  while (count >= maxTokens && current.length > 1) {
+    const firstNonSystem = current.findIndex((m) => m.role !== "system");
+    if (firstNonSystem === -1) break;
+    current.splice(firstNonSystem, 1);
+    count = await countMessagesTokens(current, systemPrompt);
+  }
+  return current;
+}

@@ -3,6 +3,7 @@ import { z } from "zod";
 import { exec } from "child_process";
 import { promisify } from "util";
 import * as path from "path";
+import * as fs from "fs";
 
 const execAsync = promisify(exec);
 const WORKSPACE = process.cwd();
@@ -91,6 +92,13 @@ function validateWorkspacePaths(command: string): string | null {
           `All paths must be relative to or within: ${WORKSPACE}`
         );
       }
+      // Symlink resolution: verify real path is still inside workspace
+      try {
+        const real = fs.realpathSync(resolved);
+        if (real !== WORKSPACE && !real.startsWith(WORKSPACE_SEP)) {
+          return `Blocked: symlink "${token}" resolves outside the workspace (→ ${real}).`;
+        }
+      } catch { /* path doesn't exist yet — no symlink to follow */ }
     }
 
     // ── Relative paths with traversal (../../../etc) ──────────────────────────

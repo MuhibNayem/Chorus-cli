@@ -1,5 +1,6 @@
 import { Box, Text } from "ink";
 import { useSpinner } from "../hooks/useSpinner.js";
+import { formatCost, costColor } from "../../llm/pricing.js";
 
 const MODEL_NAME = process.env.OLLAMA_MODEL ?? "batiai/gemma4-e2b:q4";
 const MAX_TOKENS = 128_000;
@@ -11,6 +12,7 @@ interface StatusBarProps {
   tokens: number;
   agentState: AgentState;
   sessionName?: string;
+  totalCost?: number;
 }
 
 function tokensToDisplay(n: number): string {
@@ -33,7 +35,7 @@ const STATE_LABEL: Record<AgentState, string> = {
   error:    "Error",
 };
 
-export function StatusBar({ tokens, agentState, sessionName }: StatusBarProps) {
+export function StatusBar({ tokens, agentState, sessionName, totalCost = 0 }: StatusBarProps) {
   const isActive = agentState !== "idle" && agentState !== "error";
   const spinner  = useSpinner(isActive);
 
@@ -60,6 +62,12 @@ export function StatusBar({ tokens, agentState, sessionName }: StatusBarProps) {
       <Text color="grey">{`CTX ${percent}%  `}</Text>
       <Text color={barColor as any}>{bar}</Text>
       <Text color="grey">{`  ${tokensToDisplay(tokens)} / 128K`}</Text>
+      {totalCost > 0 && (
+        <>
+          <Text color="grey">{"  "}</Text>
+          <Text color={costColor(totalCost) as any}>{formatCost(totalCost)}</Text>
+        </>
+      )}
     </Box>
   );
 }
