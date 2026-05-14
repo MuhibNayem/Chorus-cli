@@ -96,6 +96,7 @@ export function createPlanBuildReviewSwarm(
         tools: [...readOnlyFileTools, ...gitAgentTools],
         contextMode: "filtered",
         maxRounds: 20,
+        permissionMode: "suggest",
       },
       {
         name: "builder",
@@ -104,6 +105,8 @@ export function createPlanBuildReviewSwarm(
         tools: [...fileTools, ...gitAgentTools, ...shellAgentTools],
         contextMode: "filtered",
         maxRounds: 50,
+        permissionMode: "auto_edit",
+        isolation: "worktree",
       },
       {
         name: "reviewer",
@@ -112,6 +115,7 @@ export function createPlanBuildReviewSwarm(
         tools: [...readOnlyFileTools, ...gitAgentTools, ...shellAgentTools],
         contextMode: "filtered",
         maxRounds: 20,
+        permissionMode: "suggest",
       },
     ],
     task,

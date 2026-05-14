@@ -10,6 +10,7 @@
   },
   "files": [
     "dist",
+    "scripts",
     "docs",
     "README.md",
     "LICENSE",
@@ -37,10 +38,13 @@
     "build": "rm -rf dist && tsc",
     "start": "node dist/index.js",
     "test": "vitest run",
+    "postinstall": "node scripts/download-minilm.mjs",
     "prepublishOnly": "npm run build && npm test"
   },
   "dependencies": {
+    "@huggingface/transformers": "^4.2.0",
     "@inkjs/ui": "^2.0.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "dotenv": "^16.4.0",
     "glob": "^13.0.6",
     "ink": "^5.0.0",

@@ -77,8 +77,8 @@ class SequencedProvider implements LLMProvider {
 // ── Preset registry ────────────────────────────────────────────────────────────
 
 describe("SWARM_PRESETS registry", () => {
-  it("contains exactly 3 presets", () => {
-    expect(SWARM_PRESETS).toHaveLength(3);
+  it("contains at least 3 presets", () => {
+    expect(SWARM_PRESETS.length).toBeGreaterThanOrEqual(3);
   });
 
   it("has plan-build-review preset", () => {

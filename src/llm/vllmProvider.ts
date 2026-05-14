@@ -33,6 +33,10 @@ type OpenAIChatCompletionResponse = {
     };
     finish_reason?: string | null;
   }>;
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+  };
   error?: { message?: string };
 };
 
@@ -331,6 +335,7 @@ export class VllmProvider implements LLMProvider {
     let reasoning = "";
     let hasNativeReasoning = false;
     let completed = false;
+    let lastUsage: { inputTokens: number; outputTokens: number } | undefined;
 
     function* emitFragments(frags: ReturnType<ReasoningStreamParser["write"]>) {
       for (const frag of frags) {
@@ -341,6 +346,15 @@ export class VllmProvider implements LLMProvider {
           content += frag.text;
           yield { type: "token" as const, text: frag.text };
         }
+      }
+    }
+
+    function trackUsage(parsed: OpenAIChatCompletionResponse): void {
+      if (parsed.usage?.prompt_tokens !== undefined || parsed.usage?.completion_tokens !== undefined) {
+        lastUsage = {
+          inputTokens: parsed.usage?.prompt_tokens ?? 0,
+          outputTokens: parsed.usage?.completion_tokens ?? 0,
+        };
       }
     }
 
@@ -365,7 +379,7 @@ export class VllmProvider implements LLMProvider {
                 yield frag;
               }
             }
-            yield { type: "done", response: this.buildModelResponse(content, reasoning, toolCalls) };
+            yield { type: "done", response: this.buildModelResponse(content, reasoning, toolCalls, lastUsage) };
             return;
           }
 
@@ -373,6 +387,7 @@ export class VllmProvider implements LLMProvider {
           if (parsed.error?.message) {
             throw new Error(parsed.error.message);
           }
+          trackUsage(parsed);
 
           for (const choice of parsed.choices ?? []) {
             const delta = choice.delta;
@@ -411,7 +426,7 @@ export class VllmProvider implements LLMProvider {
             yield frag;
           }
         }
-        yield { type: "done", response: this.buildModelResponse(content, reasoning, toolCalls) };
+        yield { type: "done", response: this.buildModelResponse(content, reasoning, toolCalls, lastUsage) };
         return;
       }
       if (tail !== null) {
@@ -419,6 +434,7 @@ export class VllmProvider implements LLMProvider {
         if (parsed.error?.message) {
           throw new Error(parsed.error.message);
         }
+        trackUsage(parsed);
         for (const choice of parsed.choices ?? []) {
           const delta = choice.delta;
           if (!delta) continue;
@@ -456,7 +472,7 @@ export class VllmProvider implements LLMProvider {
           yield frag;
         }
       }
-      yield { type: "done", response: this.buildModelResponse(content, reasoning, toolCalls) };
+      yield { type: "done", response: this.buildModelResponse(content, reasoning, toolCalls, lastUsage) };
     }
   }
 
@@ -549,6 +565,7 @@ export class VllmProvider implements LLMProvider {
     content: string,
     reasoning: string,
     calls: Map<number, ToolCallAccumulator>,
+    usage?: { inputTokens: number; outputTokens: number },
   ): ModelResponse {
     const tool_calls: ToolCall[] = [...calls.entries()]
       .sort(([a], [b]) => a - b)
@@ -566,6 +583,7 @@ export class VllmProvider implements LLMProvider {
       content,
       ...(reasoning ? { reasoning_content: reasoning } : {}),
       ...(tool_calls.length > 0 ? { tool_calls } : {}),
+      ...(usage ? { usage } : {}),
     };
   }
 

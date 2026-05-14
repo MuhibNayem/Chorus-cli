@@ -1,6 +1,7 @@
 import type { AgentTool } from "../agent/types.js";
 import type { LLMProvider } from "../llm/provider.js";
 import type { Checkpointer } from "../agent/types.js";
+import type { ApprovalPolicy } from "../harness/types.js";
 import type { ContextMode, SwarmAgent, SwarmConfig } from "./types.js";
 
 export interface SpecialistDef {
@@ -12,6 +13,10 @@ export interface SpecialistDef {
   contextMode?: ContextMode;
   maxRounds?: number;
   outputValidator?: (output: string) => { ok: boolean; reason?: string };
+  /** Per-agent permission mode. Overrides the swarm-level policy for this specialist. */
+  permissionMode?: ApprovalPolicy;
+  /** Isolation mode. "worktree" gives this specialist an isolated git worktree. */
+  isolation?: "none" | "worktree";
 }
 
 export interface SupervisorConfig {
@@ -83,6 +88,8 @@ export function buildSupervisorSwarm(config: SupervisorConfig): SwarmConfig {
     maxRounds: s.maxRounds ?? maxRoundsPerAgent,
     model: s.model,
     outputValidator: s.outputValidator,
+    permissionMode: s.permissionMode,
+    isolation: s.isolation,
   }));
 
   return {

@@ -30,6 +30,7 @@ export type ModelResponse = {
   content: string;
   reasoning_content?: string;
   tool_calls?: ToolCall[];
+  usage?: { inputTokens: number; outputTokens: number };
 };
 
 export type ToolStreamEvent =

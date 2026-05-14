@@ -31,7 +31,7 @@ export type AgentEvent =
   | { type: "btw"; text: string }
   | { type: "checkpoint"; round: number; threadId: string }
   | { type: "compacted"; removedMessages: number; savedTokens: number }
-  | { type: "done"; response: string; reasoning: string; toolCount: number; history: ChatMessage[] }
+  | { type: "done"; response: string; reasoning: string; toolCount: number; history: ChatMessage[]; inputTokens: number; outputTokens: number; costUsd: number; durationMs: number }
   | { type: "error"; message: string; fatal: boolean };
 
 export type CheckpointState = {

@@ -5,7 +5,7 @@ import { JsonFileCheckpointer } from "../agent/checkpointer.js";
 import { HitlGate } from "../agent/hitl.js";
 import { runAgentLoop } from "../agent/loop.js";
 import type { FeedAction } from "../cli/state/feedReducer.js";
-import { allSubagents } from "./index.js";
+import { getAllSubagents } from "./index.js";
 
 export interface SubagentExecutionOptions {
   subagentName: string;
@@ -34,9 +34,10 @@ export async function executeSubagent(
 ): Promise<string> {
   const { subagentName, task, provider, modelName, dispatch, parentTurnId } = options;
 
-  const subagent = allSubagents.find((s) => s.name === subagentName);
+  const allAgents = getAllSubagents();
+  const subagent = allAgents.find((s) => s.name === subagentName);
   if (!subagent) {
-    throw new Error(`Unknown subagent: ${subagentName}. Available: ${allSubagents.map((s) => s.name).join(", ")}`);
+    throw new Error(`Unknown subagent: ${subagentName}. Available: ${allAgents.map((s) => s.name).join(", ")}`);
   }
 
   const subagentId = `subagent-${subagentName}-${Date.now()}`;
@@ -85,7 +86,7 @@ export async function executeSubagent(
       threadId,
       hitlGate,
       btwQueue,
-      policy: "full_auto",
+      policy: subagent.permissionMode ?? "full_auto",
       checkpointer,
     });
 

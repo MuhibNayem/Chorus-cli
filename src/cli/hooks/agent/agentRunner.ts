@@ -14,7 +14,7 @@ import { createDelegateTool } from "../../../subagents/delegateTool.js";
 import { executeWorkers, formatWorkerResults } from "../../../harness/workerEngine.js";
 import { SYSTEM_PROMPT } from "../../../prompts/system.js";
 import { countMessagesTokens } from "../../../context/tokenizer.js";
-import { createProvider, getDefaultProvider, getProviderModel, type ChatMessage, type LLMProvider } from "../../../llm/index.js";
+import { createProvider, getDefaultProvider, getProviderModel, getContextWindow, type ChatMessage, type LLMProvider } from "../../../llm/index.js";
 import { getModeModelConfig } from "../../../settings/storage.js";
 import { sessionManager } from "../../../session/manager.js";
 import { BtwQueue } from "../../../agent/btw.js";
@@ -22,6 +22,7 @@ import { JsonFileCheckpointer } from "../../../agent/checkpointer.js";
 import { HitlGate } from "../../../agent/hitl.js";
 import { runAgentLoop } from "../../../agent/loop.js";
 import { createDefaultMiddleware } from "../../../agent/middleware.js";
+import { getMcpTools, closeMcpConnections } from "../../../mcp/client.js";
 import type { AgentTool, HitlDecision } from "../../../agent/types.js";
 import { processAgentStream } from "../../agent/streamProcessor.js";
 import type { HitlInterrupt } from "../../agent/streamProcessor.js";
@@ -91,16 +92,17 @@ export interface AgentStreamResult {
   activeRun?: ActiveAgentRun;
 }
 
-function createRuntimeTools({
+async function createRuntimeTools({
   provider,
   modelName,
   dispatch,
   parentTurnId,
   mode = "build",
   approvalPolicy = "auto_edit",
-}: Pick<AgentRunOptions, "provider" | "modelName" | "dispatch" | "parentTurnId" | "mode" | "approvalPolicy">): AgentTool[] {
+}: Pick<AgentRunOptions, "provider" | "modelName" | "dispatch" | "parentTurnId" | "mode" | "approvalPolicy">): Promise<AgentTool[]> {
   const delegateTool = createDelegateTool({ provider, modelName, dispatch, parentTurnId });
-  const buildTools = [...filesystemTools, ...allTools, ...(approvalPolicy === "full_auto" ? [delegateTool] : [])];
+  const mcpTools = await getMcpTools();
+  const buildTools = [...filesystemTools, ...allTools, ...mcpTools, ...(approvalPolicy === "full_auto" ? [delegateTool] : [])];
   return filterToolsForPolicy(buildTools, mode, approvalPolicy) as AgentTool[];
 }
 
@@ -181,7 +183,7 @@ export async function runAgentStream(
       }
     : messagesOrOptions;
 
-  const tools = createRuntimeTools(options);
+  const tools = await createRuntimeTools(options);
   const threadId = sessionManager.getCurrent()?.id ?? crypto.randomUUID();
   const stream = runAgentLoop({
     provider: options.provider,
@@ -194,7 +196,7 @@ export async function runAgentStream(
     btwQueue,
     policy: options.approvalPolicy ?? "auto_edit",
     checkpointer,
-    middleware: createDefaultMiddleware(threadId),
+    middleware: createDefaultMiddleware(threadId, { contextWindow: getContextWindow(options.modelName) }),
   });
   const iterator = stream[Symbol.asyncIterator]();
   dbg("STREAM_OPENED", { msgCount: options.messages.length, toolCount: tools.length });
@@ -240,6 +242,7 @@ export function enqueueBtw(text: string): boolean {
 export function resetAgentRuntime(): void {
   btwQueue.clear();
   hitlGate.resetSessionApprovals();
+  void closeMcpConnections();
 }
 
 export function finalizeTurn(

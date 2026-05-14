@@ -7,11 +7,16 @@ import { App } from "./cli/index.js";
 import { hasRequiredLlmSettings } from "./settings/storage.js";
 import { ConfigWizard } from "./settings/configWizard.js";
 import { sessionManager } from "./session/manager.js";
+import { runMcpCliCommand } from "./mcp/manage.js";
 
 const HELP_TEXT = `Chorus
 
 Usage:
   chorus
+  chorus mcp list
+  chorus mcp trust
+  chorus mcp add <name> --type stdio --command <cmd> [--arg value]
+  chorus mcp add-json <name> '<json>'
   chorus --help
   chorus --version
 
@@ -39,6 +44,16 @@ async function main() {
 
   if (args.includes("--version") || args.includes("-v")) {
     console.log(getPackageVersion());
+    return;
+  }
+
+  if (args[0] === "mcp") {
+    try {
+      process.exitCode = await runMcpCliCommand(args.slice(1));
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error));
+      process.exitCode = 1;
+    }
     return;
   }
 

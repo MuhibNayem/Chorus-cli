@@ -3,6 +3,7 @@ import type { ChatMessage, ModelResponse, ToolCall, ToolDef, ToolStreamEvent } f
 import { DEFAULT_RETRY_POLICY, withRetry } from "./retry.js";
 import type { AgentMiddleware, RoundContext } from "./middleware.js";
 import type { AgentEvent, AgentTool, HitlDecision, HitlRequest, LoopOptions } from "./types.js";
+import { estimateCost } from "../llm/pricing.js";
 
 type ToolByName = Map<string, AgentTool>;
 
@@ -52,6 +53,12 @@ function toolDefsFromTools(tools: AgentTool[]): ToolDef[] {
 }
 
 function zodToJsonSchema(schema: unknown): Record<string, unknown> {
+  if (schema && typeof schema === "object" && !Array.isArray(schema)) {
+    const maybeSchema = schema as Record<string, unknown>;
+    if (typeof maybeSchema.type === "string" || maybeSchema.properties || maybeSchema.required) {
+      return maybeSchema;
+    }
+  }
   if (!(schema instanceof z.ZodType)) {
     return { type: "object", properties: {}, additionalProperties: true };
   }
@@ -180,27 +187,12 @@ export async function* runAgentLoop(options: LoopOptions): AsyncGenerator<AgentE
   const restoreFromCheckpoint = saved?.waitingForHitl != null;
   const history = restoreFromCheckpoint ? saved!.messages : messages;
 
-  // Merge tools from middleware into the tool registry
-  const allTools = [...tools, ...middleware.flatMap((mw) => mw.extraTools?.() ?? [])];
-  const toolsByName: ToolByName = new Map(
-    allTools
-      .filter((tool): tool is AgentTool & { name: string } => typeof tool.name === "string" && tool.name.length > 0)
-      .map((tool) => [tool.name!, tool]),
-  );
-  const toolDefs = toolDefsFromTools(allTools);
-
-  // Build effective system prompt with middleware injections
-  const extraPrompts = middleware.flatMap((mw) => {
-    const extra = mw.extraSystemPrompt?.();
-    return extra ? [extra] : [];
-  });
-  const effectiveSystemPrompt = extraPrompts.length > 0
-    ? `${systemPrompt}\n\n${extraPrompts.join("\n\n")}`
-    : systemPrompt;
-
   let round = restoreFromCheckpoint ? saved!.round : 0;
   let totalTools = 0;
   let pendingDecision = resumedDecision;
+  const loopStartMs = Date.now();
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
 
   while (round < maxRounds) {
     for (const text of btwQueue.drain()) {
@@ -211,6 +203,29 @@ export async function* runAgentLoop(options: LoopOptions): AsyncGenerator<AgentE
     // Middleware: beforeRound
     const roundCtx: RoundContext = { round, threadId, model, history, toolCallsThisRound: 0 };
     await runMiddleware(middleware, "beforeRound", roundCtx);
+
+    // Rebuild tools + system prompt each round (enables per-turn skill routing)
+    const allTools = [...tools, ...middleware.flatMap((mw) => mw.extraTools?.() ?? [])];
+    const toolsByName: ToolByName = new Map(
+      allTools
+        .filter((tool): tool is AgentTool & { name: string } => typeof tool.name === "string" && tool.name.length > 0)
+        .map((tool) => [tool.name!, tool]),
+    );
+
+    // Pass tool registry to middlewares that need it for pattern execution
+    for (const mw of middleware) {
+      mw.setTools?.(toolsByName);
+    }
+
+    const toolDefs = toolDefsFromTools(allTools);
+
+    const extraPrompts = middleware.flatMap((mw) => {
+      const extra = mw.extraSystemPrompt?.();
+      return extra ? [extra] : [];
+    });
+    const effectiveSystemPrompt = extraPrompts.length > 0
+      ? `${systemPrompt}\n\n${extraPrompts.join("\n\n")}`
+      : systemPrompt;
 
     // Middleware: maybeCompact — first matching middleware wins
     for (const mw of middleware) {
@@ -242,6 +257,10 @@ export async function* runAgentLoop(options: LoopOptions): AsyncGenerator<AgentE
       }
       if (event.type === "done") {
         response = event.response;
+        if (response.usage) {
+          totalInputTokens += response.usage.inputTokens;
+          totalOutputTokens += response.usage.outputTokens;
+        }
         break;
       }
     }
@@ -261,6 +280,10 @@ export async function* runAgentLoop(options: LoopOptions): AsyncGenerator<AgentE
         reasoning: response.reasoning_content ?? "",
         toolCount: totalTools,
         history,
+        inputTokens: totalInputTokens,
+        outputTokens: totalOutputTokens,
+        costUsd: estimateCost(model, totalInputTokens, totalOutputTokens),
+        durationMs: Date.now() - loopStartMs,
       };
       return;
     }
@@ -296,6 +319,10 @@ export async function* runAgentLoop(options: LoopOptions): AsyncGenerator<AgentE
         reasoning: response.reasoning_content ?? "",
         toolCount: totalTools,
         history,
+        inputTokens: totalInputTokens,
+        outputTokens: totalOutputTokens,
+        costUsd: estimateCost(model, totalInputTokens, totalOutputTokens),
+        durationMs: Date.now() - loopStartMs,
       };
       return;
     }

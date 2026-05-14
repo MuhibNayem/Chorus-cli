@@ -29,6 +29,35 @@ export type ChorusApiKeys = {
   weather?: string;
 };
 
+export type McpServerSettings = {
+  type?: "stdio" | "http" | "sse";
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  cwd?: string;
+  url?: string;
+  headers?: Record<string, string>;
+  headersHelper?: string | {
+    command: string;
+    args?: string[];
+    env?: Record<string, string>;
+    cwd?: string;
+    timeoutMs?: number;
+  };
+  bearerTokenEnv?: string;
+  auth?: {
+    type?: "none" | "bearer" | "client_credentials";
+    tokenEnv?: string;
+    clientIdEnv?: string;
+    clientSecretEnv?: string;
+    scope?: string;
+    clientName?: string;
+  };
+  enabled?: boolean;
+  timeoutMs?: number;
+  maxOutputTokens?: number;
+};
+
 export type ChorusSettings = {
   llm?: {
     provider?: string;
@@ -40,6 +69,9 @@ export type ChorusSettings = {
     advisor?: ChorusAdvisorSettings;
   };
   apiKeys?: ChorusApiKeys;
+  mcp?: {
+    servers?: Record<string, McpServerSettings>;
+  };
 };
 
 let cachedSettings: ChorusSettings | null = null;

@@ -10,12 +10,19 @@ import { checkCircuitBreaker } from "./circuit-breaker.js";
 import { validateOutput } from "./validator.js";
 import { SwarmTracer } from "./trace.js";
 import { buildAgentContext, buildSystemPrompt, createHandoffTools, isHandoffResult } from "./handoff.js";
+import { runSwarmGraph } from "./graph-executor.js";
+import { checkCostBudget, resolveModel } from "./cost-router.js";
 
 function buildAgentsByName(agents: SwarmAgent[]): Map<string, SwarmAgent> {
   return new Map(agents.map((a) => [a.name, a]));
 }
 
 export async function* runSwarm(config: SwarmConfig): AsyncGenerator<SwarmEvent> {
+  if (config.executionModel === "graph") {
+    yield* runSwarmGraph(config);
+    return;
+  }
+
   const session = createSession(config);
   const tracer = new SwarmTracer(session.swarmId);
   const agentsByName = buildAgentsByName(config.agents);
@@ -39,6 +46,10 @@ export async function* runSwarm(config: SwarmConfig): AsyncGenerator<SwarmEvent>
   session.lastHandoffDescription[config.initialAgent] = config.task;
 
   let totalAgentRounds = 0;
+  const orchestratorStartMs = Date.now();
+  let orchInputTokens = 0;
+  let orchOutputTokens = 0;
+  let orchCostUsd = 0;
 
   while (session.activeAgent !== null) {
     const agentName = session.activeAgent;
@@ -84,6 +95,7 @@ export async function* runSwarm(config: SwarmConfig): AsyncGenerator<SwarmEvent>
 
     const loopMessages = [...contextMessages];
     let agentResponse = "";
+    let lastDoneEvent: (import("../agent/types.js").AgentEvent & { type: "done" }) | undefined;
     let handoffPayload: {
       targetAgent: string;
       taskDescription: string;
@@ -91,16 +103,27 @@ export async function* runSwarm(config: SwarmConfig): AsyncGenerator<SwarmEvent>
       reasoning?: string;
     } | null = null;
 
+    const effectiveModel = resolveModel(
+      {
+        agentName: agentName,
+        defaultModel: agent.model ?? config.modelName,
+        spentUsd: orchCostUsd,
+        budgetTotalUsd: config.costBudget?.totalUsd,
+        maxRounds: agent.maxRounds,
+      },
+      config.costRouting,
+    );
+
     const loopGen = runAgentLoop({
       provider: config.provider,
-      model: agent.model ?? config.modelName,
+      model: effectiveModel,
       tools: allTools,
       messages: loopMessages,
       systemPrompt,
       threadId,
       hitlGate,
       btwQueue,
-      policy: "full_auto",
+      policy: agent.permissionMode ?? config.policy ?? "full_auto",
       checkpointer,
       maxRounds: agent.maxRounds,
       middleware,
@@ -131,6 +154,41 @@ export async function* runSwarm(config: SwarmConfig): AsyncGenerator<SwarmEvent>
         agentResponse = event.response;
         totalAgentRounds += event.toolCount + 1;
         broadcastToSharedState(session, loopMessages, agentName);
+        lastDoneEvent = event;
+        orchInputTokens += event.inputTokens;
+        orchOutputTokens += event.outputTokens;
+        orchCostUsd += event.costUsd;
+
+        // Hard cost cap check after each agent completes
+        const budgetViolation = checkCostBudget(
+          agentName,
+          event.costUsd,
+          orchCostUsd,
+          config.costBudget,
+        );
+        if (budgetViolation) {
+          const budgetEvent: SwarmEvent = {
+            type: "budget-exceeded",
+            agent: agentName,
+            scope: budgetViolation.scope,
+            limitUsd: budgetViolation.limitUsd,
+            spentUsd: budgetViolation.spentUsd,
+          };
+          tracer.record(budgetEvent);
+          yield budgetEvent;
+
+          const cbEvent: SwarmEvent = {
+            type: "circuit-break",
+            agent: agentName,
+            reason:
+              `Cost budget exceeded (${budgetViolation.scope}): ` +
+              `spent $${budgetViolation.spentUsd.toFixed(4)} of ` +
+              `$${budgetViolation.limitUsd.toFixed(4)} limit.`,
+          };
+          tracer.record(cbEvent);
+          yield cbEvent;
+          session.activeAgent = null;
+        }
       }
     }
 
@@ -138,6 +196,14 @@ export async function* runSwarm(config: SwarmConfig): AsyncGenerator<SwarmEvent>
       type: "agent-done",
       agent: agentName,
       responseText: agentResponse,
+      metrics: {
+        inputTokens: lastDoneEvent?.inputTokens ?? 0,
+        outputTokens: lastDoneEvent?.outputTokens ?? 0,
+        costUsd: lastDoneEvent?.costUsd ?? 0,
+        durationMs: lastDoneEvent?.durationMs ?? 0,
+        rounds: (lastDoneEvent?.toolCount ?? 0) + 1,
+        toolCalls: lastDoneEvent?.toolCount ?? 0,
+      },
     };
     tracer.record(agentDoneEvent);
     yield agentDoneEvent;
@@ -187,6 +253,10 @@ export async function* runSwarm(config: SwarmConfig): AsyncGenerator<SwarmEvent>
     swarmId: session.swarmId,
     handoffCount: session.handoffCount,
     totalAgentRounds,
+    totalInputTokens: orchInputTokens,
+    totalOutputTokens: orchOutputTokens,
+    totalCostUsd: orchCostUsd,
+    durationMs: Date.now() - orchestratorStartMs,
   };
   tracer.record(doneEvent);
   tracer.flush();

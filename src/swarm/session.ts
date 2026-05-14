@@ -65,7 +65,7 @@ export function applyHandoff(session: SwarmSession, request: HandoffRequest): vo
   }
 }
 
-export function createArtifactTools(session: SwarmSession): AgentTool[] {
+export function createArtifactTools(session: Pick<SwarmSession, "artifacts">): AgentTool[] {
   const setArtifact: AgentTool = {
     name: "set_artifact",
     description: "Store a named artifact that persists across agent handoffs.",

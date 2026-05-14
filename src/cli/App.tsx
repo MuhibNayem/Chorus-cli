@@ -3,6 +3,7 @@ import { Box, useApp, useInput } from "ink";
 import { globSync } from "glob";
 import * as fs from "fs";
 import * as path from "path";
+import { spawn } from "child_process";
 import { Feed } from "./components/Feed.js";
 import { InputBox } from "./components/InputBox.js";
 import { StatusBar, type AgentState } from "./components/StatusBar.js";
@@ -31,6 +32,7 @@ import { ApprovalCard } from "./components/ApprovalCard.js";
 import { runSwarm } from "../swarm/orchestrator.js";
 import { buildPresetSwarm } from "../swarm/presets/index.js";
 import { createProvider } from "../llm/registry.js";
+import { buildSwarmReport, formatSwarmReport } from "../swarm/report.js";
 
 type SelectionMode = {
   title: string;
@@ -617,6 +619,129 @@ export function App() {
     }
   }, [dispatch]);
 
+  const showSwarmReport = useCallback((swarmId: string) => {
+    const report = buildSwarmReport(swarmId);
+    dispatch({
+      type: "APPEND_SYSTEM",
+      id: `swarm-report-${Date.now()}`,
+      text: report ? formatSwarmReport(report) : `No trace found for swarm: ${swarmId}`,
+    });
+  }, [dispatch]);
+
+  const showConfirmDialog = useCallback((message: string, onConfirm: () => void) => {
+    setSelectionMode({
+      title: message,
+      items: [
+        { value: "confirm", label: "Confirm" },
+        { value: "cancel", label: "Cancel" },
+      ],
+      onSelect: (value) => {
+        setSelectionMode(null);
+        if (value === "confirm") onConfirm();
+      },
+    });
+    setSelectionIndex(0);
+  }, []);
+
+  const showFilePicker = useCallback((onSelect: (filePath: string, content: string) => void) => {
+    const files = workspaceFiles.current
+      .filter((file) => !isSecretFile(file))
+      .slice(0, 300)
+      .map((file) => ({ value: file, label: file }));
+
+    if (files.length === 0) {
+      dispatch({ type: "APPEND_SYSTEM", id: `file-picker-${Date.now()}`, text: "No readable workspace files found." });
+      return;
+    }
+
+    setSelectionMode({
+      title: "Select file to add",
+      items: files,
+      onSelect: (filePath) => {
+        setSelectionMode(null);
+        try {
+          const content = fs.readFileSync(path.join(WORKSPACE, filePath), "utf-8");
+          onSelect(filePath, content);
+        } catch (error) {
+          dispatch({
+            type: "APPEND_SYSTEM",
+            id: `file-picker-${Date.now()}`,
+            text: `Could not read file: ${error instanceof Error ? error.message : String(error)}`,
+          });
+        }
+      },
+    });
+    setSelectionIndex(0);
+  }, [dispatch]);
+
+  const runShellStream = useCallback((command: string, args: string[], label: string) => {
+    const startedAt = Date.now();
+    const runId = `shell-${startedAt}`;
+    const display = [command, ...args].join(" ");
+    let output = "";
+    let pending = "";
+    let closed = false;
+
+    const appendChunk = (force = false) => {
+      if (!pending && !force) return;
+      const chunk = pending;
+      pending = "";
+      if (!chunk) return;
+      dispatch({
+        type: "APPEND_SYSTEM",
+        id: `${runId}-chunk-${Date.now()}`,
+        text: `${label} output:\n\`\`\`\n${chunk.slice(-6000)}\n\`\`\``,
+      });
+    };
+
+    try {
+      const child = spawn(command, args, {
+        cwd: WORKSPACE,
+        env: process.env,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+
+      const timer = setInterval(() => appendChunk(), 1000);
+      const collect = (chunk: Buffer) => {
+        const text = chunk.toString();
+        output += text;
+        pending += text;
+      };
+
+      child.stdout.on("data", collect);
+      child.stderr.on("data", collect);
+      child.on("error", (error) => {
+        if (closed) return;
+        closed = true;
+        clearInterval(timer);
+        dispatch({
+          type: "APPEND_SYSTEM",
+          id: `${runId}-error`,
+          text: `${label} failed to start: ${error.message}`,
+        });
+      });
+      child.on("close", (code) => {
+        if (closed) return;
+        closed = true;
+        clearInterval(timer);
+        appendChunk(true);
+        const durationMs = Date.now() - startedAt;
+        const cappedOutput = output.trim().slice(-20_000) || "[no output]";
+        dispatch({
+          type: "APPEND_SYSTEM",
+          id: `${runId}-done`,
+          text: `${label} finished (${display})\nExit: ${code ?? "unknown"}  Duration: ${(durationMs / 1000).toFixed(1)}s\n\`\`\`\n${cappedOutput}\n\`\`\``,
+        });
+      });
+    } catch (error) {
+      dispatch({
+        type: "APPEND_SYSTEM",
+        id: `${runId}-error`,
+        text: `${label} failed: ${error instanceof Error ? error.message : String(error)}`,
+      });
+    }
+  }, [dispatch]);
+
   const runSwarmPreset = useCallback(
     (presetName: string, task: string) => {
       const rawProvider = sessionProvider ?? displayLabel.split(":")[0] ?? "ollama";
@@ -764,6 +889,17 @@ export function App() {
     [dispatch, sessionProvider, sessionModel, displayLabel],
   );
 
+  const sendAgentMessage = useCallback((message: string) => {
+    const expanded = expandMentions(message, workspaceFiles.current);
+    void submit(expanded);
+  }, [submit]);
+
+  const getSessionCost = useCallback(() => ({
+    inputTokens: feedState.totalInputTokens,
+    outputTokens: feedState.totalOutputTokens,
+    costUsd: feedState.totalCost,
+  }), [feedState.totalInputTokens, feedState.totalOutputTokens, feedState.totalCost]);
+
   const onNewSession = useCallback(() => {
     sessionManager.createSession();
     clearHistory();
@@ -821,6 +957,12 @@ export function App() {
         runSwarmPreset,
         stopSwarm,
         listSwarmTraces,
+        showSwarmReport,
+        sendAgentMessage,
+        runShellStream,
+        showFilePicker,
+        showConfirmDialog,
+        getSessionCost,
         showModeModelSelect: (mode) => {
           const provider = sessionProvider ?? displayLabel.split(":")[0];
           setSelectionMode({
@@ -886,7 +1028,7 @@ export function App() {
       const expanded = expandMentions(trimmed, workspaceFiles.current);
       await submit(expanded);
     },
-    [submit, clearHistory, feedState.processing, exit, suggestionIndex, activeSuggestions, slashSuggestions, onResumeSession, onNewSession, displayLabel, sessionProvider, sessionModel, executionMode, approvalPolicy, advisorEnabled, showModelSelectForProvider, showProviderSelect, showResumeSelect, showDefaultProviderSelect, showAgents, showingApiKeysConfig, runSwarmPreset, stopSwarm, listSwarmTraces]
+    [submit, clearHistory, feedState.processing, exit, suggestionIndex, activeSuggestions, slashSuggestions, onResumeSession, onNewSession, displayLabel, sessionProvider, sessionModel, executionMode, approvalPolicy, advisorEnabled, showModelSelectForProvider, showProviderSelect, showResumeSelect, showDefaultProviderSelect, showAgents, showingApiKeysConfig, runSwarmPreset, stopSwarm, listSwarmTraces, showSwarmReport, sendAgentMessage, runShellStream, showFilePicker, showConfirmDialog, getSessionCost]
   );
 
   const agentState = useMemo<AgentState>(() => {

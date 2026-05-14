@@ -6,6 +6,7 @@ import { countMessagesTokens } from "../context/tokenizer.js";
 import { getContextWindow } from "../llm/contextWindows.js";
 import type { ChatMessage } from "../llm/provider.js";
 import type { AgentTool } from "./types.js";
+import { SkillMiddleware } from "../skills/middleware.js";
 
 function chorusHome(): string {
   return process.env.CHORUS_HOME_DIR ?? path.join(os.homedir(), ".chorus");
@@ -39,6 +40,7 @@ export interface AgentMiddleware {
   afterRound?(ctx: RoundContext): Promise<void>;
   extraTools?(): AgentTool[];
   extraSystemPrompt?(): string;
+  setTools?(toolsByName: Map<string, AgentTool>): void;
 }
 
 // ─── SummarizationMiddleware ──────────────────────────────────────────────────
@@ -217,10 +219,19 @@ export class TodoMiddleware implements AgentMiddleware {
 
 // ─── Default middleware factory ───────────────────────────────────────────────
 
-export function createDefaultMiddleware(threadId: string): AgentMiddleware[] {
-  return [
+export function createDefaultMiddleware(
+  threadId: string,
+  opts: { contextWindow?: number; skillDirs?: string[] } = {},
+): AgentMiddleware[] {
+  const middleware: AgentMiddleware[] = [
     new SummarizationMiddleware(threadId),
     new ObservabilityMiddleware(threadId),
     new LargeOutputOffloadMiddleware(),
   ];
+
+  if (opts.contextWindow && opts.contextWindow > 0) {
+    middleware.push(new SkillMiddleware(opts.contextWindow, opts.skillDirs));
+  }
+
+  return middleware;
 }

@@ -28,6 +28,8 @@ type OllamaChatChunk = {
   };
   done?: boolean;
   error?: string;
+  prompt_eval_count?: number;
+  eval_count?: number;
 };
 
 type OllamaToolCall = {
@@ -45,6 +47,16 @@ type OllamaToolAccumulator = {
   name: string;
   arguments: string;
 };
+
+function extractOllamaUsage(chunk: OllamaChatChunk): { inputTokens: number; outputTokens: number } | undefined {
+  if (chunk.prompt_eval_count !== undefined || chunk.eval_count !== undefined) {
+    return {
+      inputTokens: chunk.prompt_eval_count ?? 0,
+      outputTokens: chunk.eval_count ?? 0,
+    };
+  }
+  return undefined;
+}
 
 export class OllamaProvider implements LLMProvider {
   readonly name: ProviderName = "ollama";
@@ -239,7 +251,8 @@ export class OllamaProvider implements LLMProvider {
                 yield frag;
               }
             }
-            yield { type: "done", response: this.buildModelResponse(content, reasoning, toolCalls) };
+            const usage = extractOllamaUsage(chunk);
+            yield { type: "done", response: this.buildModelResponse(content, reasoning, toolCalls, usage) };
             return;
           }
         }
@@ -281,7 +294,8 @@ export class OllamaProvider implements LLMProvider {
               yield frag;
             }
           }
-          yield { type: "done", response: this.buildModelResponse(content, reasoning, toolCalls) };
+          const usage = extractOllamaUsage(chunk);
+          yield { type: "done", response: this.buildModelResponse(content, reasoning, toolCalls, usage) };
           return;
         }
       }
@@ -377,6 +391,7 @@ export class OllamaProvider implements LLMProvider {
     content: string,
     reasoning: string,
     calls: Map<number, OllamaToolAccumulator>,
+    usage?: { inputTokens: number; outputTokens: number },
   ): ModelResponse {
     const tool_calls: ToolCall[] = [...calls.entries()]
       .sort(([a], [b]) => a - b)
@@ -394,6 +409,7 @@ export class OllamaProvider implements LLMProvider {
       content,
       ...(reasoning ? { reasoning_content: reasoning } : {}),
       ...(tool_calls.length > 0 ? { tool_calls } : {}),
+      ...(usage ? { usage } : {}),
     };
   }
 

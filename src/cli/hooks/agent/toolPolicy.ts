@@ -1,10 +1,14 @@
 import type { ApprovalPolicy, ExecutionMode } from "../../../harness/types.js";
 export type { ApprovalPolicy, ExecutionMode };
 
-type ToolLike = { name?: string };
+type ToolLike = { name?: string; mcpReadOnly?: boolean; mcpServerName?: string };
 
 const MUTATING_TOOLS = new Set(["write_file", "edit_file", "run_command", "git_commit", "delegate_to_subagent"]);
 const SHELL_TOOLS = new Set(["run_command"]);
+
+function isMcpTool(tool: ToolLike): boolean {
+  return !!tool.mcpServerName || (tool.name ?? "").startsWith("mcp__");
+}
 
 export function filterToolsForPolicy(
   tools: ToolLike[],
@@ -12,10 +16,10 @@ export function filterToolsForPolicy(
   policy: ApprovalPolicy
 ): ToolLike[] {
   if (mode === "plan") {
-    return tools.filter((t) => !MUTATING_TOOLS.has(t.name ?? ""));
+    return tools.filter((t) => !MUTATING_TOOLS.has(t.name ?? "") && (!isMcpTool(t) || t.mcpReadOnly === true));
   }
   if (policy === "suggest") {
-    return tools.filter((t) => !SHELL_TOOLS.has(t.name ?? ""));
+    return tools.filter((t) => !SHELL_TOOLS.has(t.name ?? "") && (!isMcpTool(t) || t.mcpReadOnly === true));
   }
   return tools;
 }

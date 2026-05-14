@@ -7,14 +7,6 @@ interface WelcomeScreenProps {
   approvalPolicy: string;
 }
 
-const LOGO = [
-  "   ______ __                                ",
-  "  / ____// /_   ____   _____ __  __ _____ ",
-  " / /    / __ \\ / __ \\ / ___// / / // ___/ ",
-  "/ /___ / / / // /_/ // /   / /_/ /(__  )  ",
-  "\\____//_/ /_/ \\____//_/    \\__,_//____/   ",
-];
-
 function shortModelLabel(label: string): string {
   return label.length > 34 ? `${label.slice(0, 31)}...` : label;
 }
@@ -28,7 +20,7 @@ function shortWorkspace(workspace: string): string {
 function WelcomeCommand({ command, description }: { command: string; description: string }) {
   return (
     <Box>
-      <Text color="cyan">{command.padEnd(16)}</Text>
+      <Text color="cyan" bold>{command.padEnd(16)}</Text>
       <Text color="grey">{description}</Text>
     </Box>
   );
@@ -42,37 +34,50 @@ export function WelcomeScreen({
 }: WelcomeScreenProps) {
   return (
     <Box flexDirection="column" flexGrow={1} paddingTop={1} paddingLeft={2} paddingRight={2}>
-      <Box flexDirection="column" marginBottom={1}>
-        {LOGO.map((line) => (
-          <Text key={line} color="cyan" bold>
-            {line}
-          </Text>
-        ))}
+      <Box marginBottom={1}>
+        <Text color="cyan" bold>{"✦ "}</Text>
+        <Text color="white" bold>{"Chorus"}</Text>
+        <Text color="grey">{"  agentic engineering CLI"}</Text>
+      </Box>
+
+      <Box
+        borderStyle="round"
+        borderColor="cyan"
+        paddingX={2}
+        paddingY={1}
+        flexDirection="column"
+        marginBottom={1}
+      >
         <Text color="white" bold>
-          {"Local-first agentic engineering, orchestrated from your terminal."}
+          {"What do you want to build today?"}
+        </Text>
+        <Text color="grey">
+          {"Ask for a change, inspect a codebase, run a swarm, or connect MCP tools."}
         </Text>
       </Box>
 
-      <Box borderStyle="round" borderColor="cyan" paddingX={2} paddingY={1} flexDirection="column" marginBottom={1}>
-        <Box marginBottom={1}>
-          <Text color="grey">{"Workspace  "}</Text>
+      <Box borderStyle="single" borderColor="grey" paddingX={2} paddingY={1} flexDirection="column" marginBottom={1}>
+        <Box>
+          <Text color="grey">{"cwd       "}</Text>
           <Text color="white">{shortWorkspace(workspace)}</Text>
         </Box>
         <Box>
-          <Text color="grey">{"Model      "}</Text>
+          <Text color="grey">{"model     "}</Text>
           <Text color="white">{shortModelLabel(modelLabel)}</Text>
-          <Text color="grey">{"  ·  "}</Text>
+        </Box>
+        <Box>
+          <Text color="grey">{"mode      "}</Text>
           <Text color={executionMode === "plan" ? "yellow" : "green"}>{executionMode.toUpperCase()}</Text>
-          <Text color="grey">{`/${approvalPolicy.replace("_", "-")}`}</Text>
+          <Text color="grey">{`  ${approvalPolicy.replace("_", "-")}`}</Text>
         </Box>
       </Box>
 
       <Box flexDirection="column" marginBottom={1}>
-        <Text color="grey">{"Start with a task, or use a command:"}</Text>
+        <Text color="grey">{"Try one of these:"}</Text>
+        <WelcomeCommand command="fix tests" description="find failures, patch code, and verify" />
+        <WelcomeCommand command="/plan" description="switch to read-only planning mode" />
+        <WelcomeCommand command="/swarm" description="run a coordinated multi-agent workflow" />
         <WelcomeCommand command="/config" description="configure providers, API keys, and defaults" />
-        <WelcomeCommand command="/model" description="switch the active model for this session" />
-        <WelcomeCommand command="/agents" description="create, inspect, or manage specialized agents" />
-        <WelcomeCommand command="/resume" description="continue a previous workspace session" />
       </Box>
 
       <Box borderStyle="single" borderColor="grey" paddingX={1}>

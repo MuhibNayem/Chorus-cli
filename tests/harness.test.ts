@@ -6,7 +6,7 @@ import {
   verifyTaskCompletion,
   WorkerPool,
 } from "../src/harness/index.js";
-import { toolNamesForPolicy } from "../src/cli/hooks/agent/toolPolicy.js";
+import { filterToolsForPolicy, toolNamesForPolicy } from "../src/cli/hooks/agent/toolPolicy.js";
 
 describe("routeTask", () => {
   it("routes simple work directly without worker orchestration", () => {
@@ -80,6 +80,24 @@ describe("routeTask", () => {
     expect(toolNamesForPolicy("build", "auto_edit")?.has("edit_file")).toBe(true);
     expect(toolNamesForPolicy("build", "auto_edit")?.has("run_command")).toBe(false);
     expect(toolNamesForPolicy("build", "full_auto")).toBeNull();
+  });
+
+  it("filters MCP tools conservatively outside full automation", () => {
+    const tools = [
+      { name: "read_file" },
+      { name: "mcp__docs__search", mcpServerName: "docs", mcpReadOnly: true },
+      { name: "mcp__jira__create_issue", mcpServerName: "jira", mcpReadOnly: false },
+    ];
+
+    expect(filterToolsForPolicy(tools, "plan", "full_auto").map((t) => t.name)).toEqual([
+      "read_file",
+      "mcp__docs__search",
+    ]);
+    expect(filterToolsForPolicy(tools, "build", "suggest").map((t) => t.name)).toEqual([
+      "read_file",
+      "mcp__docs__search",
+    ]);
+    expect(filterToolsForPolicy(tools, "build", "auto_edit").map((t) => t.name)).toContain("mcp__jira__create_issue");
   });
 
   it("routes broad repo work to background async", () => {

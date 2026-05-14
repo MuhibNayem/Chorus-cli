@@ -22,7 +22,7 @@ export class HitlGate {
     if (policy === "full_auto" || policy === "suggest") return false;
     return toolCalls.some((toolCall) => {
       const name = toolCall.function.name ?? "";
-      return HITL_TOOL_NAMES.has(name) && !this.sessionApproved.has(name);
+      return (HITL_TOOL_NAMES.has(name) || name.startsWith("mcp__")) && !this.sessionApproved.has(name);
     });
   }
 
