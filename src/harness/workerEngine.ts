@@ -126,7 +126,7 @@ async function executeSingleWorker(
       sessionId,
       event: {
         kind: "response",
-        tokens: [summary],
+        text: summary,
       },
     });
 
@@ -159,7 +159,7 @@ async function executeSingleWorker(
       sessionId,
       event: {
         kind: "response",
-        tokens: [`Error: ${message}`],
+        text: `Error: ${message}`,
       },
     });
 

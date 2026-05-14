@@ -1,15 +1,12 @@
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
-
-const SERPER_API_KEY = process.env.SERPER_API_KEY;
-const GOOGLE_CSE_API_KEY = process.env.GOOGLE_CSE_API_KEY;
-const GOOGLE_CSE_ID = process.env.GOOGLE_CSE_ID;
-const WEATHER_API_KEY = process.env.WEATHER_API_KEY;
+import { getSerperApiKey, getGoogleCseApiKey, getGoogleCseId, getWeatherApiKey } from "../settings/storage.js";
 
 export const InternetSearchTool = tool(
   async ({ query, maxResults = 5 }: { query: string; maxResults?: number }) => {
+    const SERPER_API_KEY = getSerperApiKey();
     if (!SERPER_API_KEY) {
-      return "Error: SERPER_API_KEY not set in environment";
+      return "Error: SERPER_API_KEY not set. Run /config to configure it.";
     }
 
     try {
@@ -52,8 +49,10 @@ export const InternetSearchTool = tool(
 
 export const WebSearchTool = tool(
   async ({ query, maxResults = 5 }: { query: string; maxResults?: number }) => {
+    const GOOGLE_CSE_API_KEY = getGoogleCseApiKey();
+    const GOOGLE_CSE_ID = getGoogleCseId();
     if (!GOOGLE_CSE_API_KEY || !GOOGLE_CSE_ID) {
-      return "Error: GOOGLE_CSE_API_KEY or GOOGLE_CSE_ID not set";
+      return "Error: GOOGLE_CSE_API_KEY or GOOGLE_CSE_ID not set. Run /config to configure them.";
     }
 
     try {
@@ -94,8 +93,9 @@ export const WebSearchTool = tool(
 
 export const WeatherTool = tool(
   async ({ city }: { city: string }) => {
+    const WEATHER_API_KEY = getWeatherApiKey();
     if (!WEATHER_API_KEY) {
-      return "Error: WEATHER_API_KEY not set in environment";
+      return "Error: WEATHER_API_KEY not set. Run /config to configure it.";
     }
 
     try {

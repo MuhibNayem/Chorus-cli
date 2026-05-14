@@ -20,6 +20,7 @@ export interface CommandContext {
   showDefaultModelSelect?: () => void;
   showAgents?: () => void;
   showModeModelSelect?: (mode: "build" | "plan") => void;
+  showApiKeysConfig?: () => void;
   getExecutionMode?: () => ExecutionMode;
   setExecutionMode?: (mode: ExecutionMode) => void;
   getApprovalPolicy?: () => ApprovalPolicy;
@@ -53,6 +54,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: "/build-model",   description: "Set model for Build mode (interactive)" },
   { name: "/plan-model",    description: "Set model for Plan mode (interactive)" },
   { name: "/advisor",       description: "Toggle advisor: on | off | status" },
+  { name: "/config",        description: "Configure API keys (Serper, Google CSE, Weather)" },
   { name: "/session-new",   description: "Start a fresh session" },
   { name: "/exit",          description: "Exit the CLI" },
 ];
@@ -231,6 +233,10 @@ export function handleSlashCommand(
       ctx.dispatch({ type: "APPEND_SYSTEM", id, text: `${status}\nUsage: /advisor on | off` });
       return true;
     }
+
+    case "/config":
+      ctx.showApiKeysConfig?.();
+      return true;
 
     case "/exit":
       ctx.exit();

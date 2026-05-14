@@ -22,6 +22,13 @@ export type ChorusAdvisorSettings = {
   autoOnComplexTasks?: boolean;
 };
 
+export type ChorusApiKeys = {
+  serper?: string;
+  googleCseKey?: string;
+  googleCseId?: string;
+  weather?: string;
+};
+
 export type ChorusSettings = {
   llm?: {
     provider?: string;
@@ -32,6 +39,7 @@ export type ChorusSettings = {
     };
     advisor?: ChorusAdvisorSettings;
   };
+  apiKeys?: ChorusApiKeys;
 };
 
 let cachedSettings: ChorusSettings | null = null;
@@ -132,4 +140,40 @@ export function isAdvisorEnabled(): boolean {
 
 export function clearSettingsCache(): void {
   cachedSettings = null;
+}
+
+// ── API key resolution (env wins, settings fallback) ──────────────────────────
+
+function envOrApiKey(envVar: string, settingsKey: keyof ChorusApiKeys): string | undefined {
+  return process.env[envVar] ?? loadSettings().apiKeys?.[settingsKey];
+}
+
+export function getSerperApiKey(): string | undefined {
+  return envOrApiKey("SERPER_API_KEY", "serper");
+}
+
+export function getGoogleCseApiKey(): string | undefined {
+  return envOrApiKey("GOOGLE_CSE_API_KEY", "googleCseKey");
+}
+
+export function getGoogleCseId(): string | undefined {
+  return envOrApiKey("GOOGLE_CSE_ID", "googleCseId");
+}
+
+export function getWeatherApiKey(): string | undefined {
+  return envOrApiKey("WEATHER_API_KEY", "weather");
+}
+
+export function getApiKeyStatus(): Array<{ label: string; key: keyof ChorusApiKeys; envVar: string; value: string | undefined; fromEnv: boolean }> {
+  return [
+    { label: "Serper API key",      key: "serper",       envVar: "SERPER_API_KEY",     value: getSerperApiKey(),     fromEnv: !!process.env.SERPER_API_KEY },
+    { label: "Google CSE API key",  key: "googleCseKey", envVar: "GOOGLE_CSE_API_KEY", value: getGoogleCseApiKey(),  fromEnv: !!process.env.GOOGLE_CSE_API_KEY },
+    { label: "Google CSE ID",       key: "googleCseId",  envVar: "GOOGLE_CSE_ID",      value: getGoogleCseId(),      fromEnv: !!process.env.GOOGLE_CSE_ID },
+    { label: "Weather API key",     key: "weather",      envVar: "WEATHER_API_KEY",     value: getWeatherApiKey(),    fromEnv: !!process.env.WEATHER_API_KEY },
+  ];
+}
+
+export function saveApiKeys(keys: ChorusApiKeys): void {
+  const existing = loadSettings();
+  saveSettings({ ...existing, apiKeys: { ...existing.apiKeys, ...keys } });
 }

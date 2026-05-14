@@ -15,6 +15,7 @@ import { handleSlashCommand, SLASH_COMMANDS } from "./commands.js";
 import { getProviderLabel, getProviderModel, getContextWindow, normalizeProviderName, resetDefaultProvider, getDefaultProvider } from "../llm/index.js";
 import { sessionManager } from "../session/manager.js";
 import { SettingsWizard } from "../settings/wizard.js";
+import { ConfigWizard } from "../settings/configWizard.js";
 import { loadSettings, saveSettings, clearSettingsCache } from "../settings/storage.js";
 import { ALL_PROVIDERS, getProviderById } from "../settings/providers.js";
 import type { ChorusSettings } from "../settings/storage.js";
@@ -97,6 +98,7 @@ export function App() {
   const [approvalPolicy, setApprovalPolicy] = useState<ApprovalPolicy>("auto_edit");
   const [advisorEnabled, setAdvisorEnabled] = useState<boolean>(() => loadSettings().llm?.advisor?.enabled ?? false);
   const [wizardMode, setWizardMode] = useState<"add-provider" | null>(null);
+  const [showingApiKeysConfig, setShowingApiKeysConfig] = useState(false);
   const [agentCreatorOpen, setAgentCreatorOpen] = useState(false);
   const [agentEditorTarget, setAgentEditorTarget] = useState<AgentDef | null>(null);
   const [agentViewerTarget, setAgentViewerTarget] = useState<AgentDef | null>(null);
@@ -629,6 +631,7 @@ export function App() {
         showResumeSelect,
         showDefaultModelSelect: showDefaultProviderSelect,
         showAgents,
+        showApiKeysConfig: () => setShowingApiKeysConfig(true),
         showModeModelSelect: (mode) => {
           const provider = sessionProvider ?? displayLabel.split(":")[0];
           setSelectionMode({
@@ -694,10 +697,10 @@ export function App() {
       const expanded = expandMentions(trimmed, workspaceFiles.current);
       await submit(expanded);
     },
-    [submit, clearHistory, feedState.processing, exit, suggestionIndex, activeSuggestions, slashSuggestions, onResumeSession, onNewSession, displayLabel, sessionProvider, sessionModel, executionMode, approvalPolicy, advisorEnabled, showModelSelectForProvider, showProviderSelect, showResumeSelect, showDefaultProviderSelect, showAgents]
+    [submit, clearHistory, feedState.processing, exit, suggestionIndex, activeSuggestions, slashSuggestions, onResumeSession, onNewSession, displayLabel, sessionProvider, sessionModel, executionMode, approvalPolicy, advisorEnabled, showModelSelectForProvider, showProviderSelect, showResumeSelect, showDefaultProviderSelect, showAgents, showingApiKeysConfig]
   );
 
-  const agentState: AgentState = (() => {
+  const agentState = useMemo<AgentState>(() => {
     if (!feedState.processing) return "idle";
     for (let i = feedState.entries.length - 1; i >= 0; i--) {
       const e = feedState.entries[i];
@@ -709,7 +712,7 @@ export function App() {
       }
     }
     return "thinking";
-  })();
+  }, [feedState.processing, feedState.entries]);
 
   // Session view mode
   if (sessionViewId) {
@@ -786,6 +789,26 @@ export function App() {
           maxTokens={contextWindow}
         />
       </Box>
+    );
+  }
+
+  if (showingApiKeysConfig) {
+    return (
+      <ConfigWizard
+        onDone={(saved) => {
+          if (saved) {
+            clearSettingsCache();
+            resetDefaultProvider();
+            setModelLabel(getProviderLabel());
+          }
+          setShowingApiKeysConfig(false);
+          dispatch({
+            type: "APPEND_SYSTEM",
+            id: `config-${Date.now()}`,
+            text: saved ? "Configuration saved to ~/.chorus/settings.json" : "Configuration cancelled.",
+          });
+        }}
+      />
     );
   }
 

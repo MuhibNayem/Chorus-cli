@@ -161,9 +161,11 @@ function createConfiguredAgent({
 }
 
 function agentStreamConfig() {
+  const limit = parseInt(process.env.LANGGRAPH_RECURSION_LIMIT ?? "", 10);
   return {
     streamMode: ["messages", "updates"] as const,
     configurable: { thread_id: sessionManager.getCurrent()?.id },
+    recursionLimit: Number.isFinite(limit) && limit > 0 ? limit : 2000,
   };
 }
 

@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { Box, Text } from "ink";
 import { useSpinner } from "../hooks/useSpinner.js";
 import type { ApprovalPolicy, ExecutionMode } from "../../harness/types.js";
@@ -37,7 +38,7 @@ const STATE_LABEL: Record<AgentState, string> = {
   error:    "Error",
 };
 
-export function StatusBar({
+function StatusBarInner({
   modelLabel,
   tokens,
   agentState,
@@ -78,3 +79,5 @@ export function StatusBar({
     </Box>
   );
 }
+
+export const StatusBar = memo(StatusBarInner);

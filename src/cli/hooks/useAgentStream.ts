@@ -229,11 +229,6 @@ export function useAgentStream({
         if (streamResult.interrupt) {
           pendingRunRef.current = pendingRun;
           setPendingApproval({ interrupt: streamResult.interrupt });
-          dispatch({
-            type: "APPEND_SYSTEM",
-            id: `approval-${Date.now()}`,
-            text: "Approval required before continuing.",
-          });
           return;
         }
         messagesRef.current = finalizeTurn(
@@ -275,16 +270,6 @@ export function useAgentStream({
 
       pendingRunRef.current = null;
       setPendingApproval(null);
-      dispatch({
-        type: "APPEND_SYSTEM",
-        id: `approval-decision-${Date.now()}`,
-        text:
-          decision === "deny"
-            ? "Approval denied. Resuming the agent with a rejection."
-            : decision === "approve_session"
-              ? "Approved for this session. Resuming the agent."
-              : "Approved. Resuming the agent.",
-      });
 
       try {
         const streamResult = await resumeAgentStream({
@@ -305,11 +290,6 @@ export function useAgentStream({
         if (streamResult.interrupt) {
           pendingRunRef.current = pendingRun;
           setPendingApproval({ interrupt: streamResult.interrupt });
-          dispatch({
-            type: "APPEND_SYSTEM",
-            id: `approval-${Date.now()}`,
-            text: "Approval required before continuing.",
-          });
           return;
         }
 

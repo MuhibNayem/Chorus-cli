@@ -25,7 +25,7 @@ export type ToolEvent = {
 
 export type ResponseEvent = {
   kind: "response";
-  tokens: string[];
+  text: string;
 };
 
 export type WorkerEvent = {
@@ -69,7 +69,7 @@ export interface SubagentCardData {
   name: string;
   task: string;
   status: "running" | "done" | "error";
-  tokens: string[];
+  text: string;
   result?: string;
   sessionId?: string;
 }
@@ -215,10 +215,10 @@ export function feedReducer(state: FeedState, action: FeedAction): FeedState {
         entries: mapActiveTurn(state.entries, (turn) => {
           const last = turn.events[turn.events.length - 1];
           if (last?.kind === "response") {
-            const updated: ResponseEvent = { ...last, tokens: [...last.tokens, action.text] };
+            const updated: ResponseEvent = { kind: "response", text: last.text + action.text };
             return { ...turn, events: [...turn.events.slice(0, -1), updated] };
           }
-          const ev: ResponseEvent = { kind: "response", tokens: [action.text] };
+          const ev: ResponseEvent = { kind: "response", text: action.text };
           return { ...turn, events: [...turn.events, ev] };
         }),
       };
@@ -324,7 +324,7 @@ export function feedReducer(state: FeedState, action: FeedAction): FeedState {
           historyEntries.push({
             kind: "turn",
             id: `turn-${id}`,
-            events: [{ kind: "response", tokens: [msg.content] }],
+            events: [{ kind: "response", text: msg.content }],
             done: true,
             startedAt: 0,
           });
@@ -382,10 +382,10 @@ export function feedReducer(state: FeedState, action: FeedAction): FeedState {
       if (lastEvent?.kind === "response") {
         newEvents = [
           ...session.events.slice(0, -1),
-          { ...lastEvent, tokens: [...lastEvent.tokens, action.text] },
+          { kind: "response", text: lastEvent.text + action.text },
         ];
       } else {
-        newEvents = [...session.events, { kind: "response", tokens: [action.text] }];
+        newEvents = [...session.events, { kind: "response", text: action.text }];
       }
       return {
         ...state,

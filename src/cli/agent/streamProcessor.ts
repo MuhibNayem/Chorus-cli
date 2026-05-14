@@ -202,6 +202,32 @@ export async function processAgentStream(
   let hadError = false;
   const thinkParser = new ThinkTagParser();
 
+  // ── Token batching ──────────────────────────────────────────────────────────
+  // Buffer tokens and flush at most every 32ms (~30fps) to avoid triggering
+  // a full Ink terminal repaint on every single chunk from the LLM stream.
+  let pendingResponse = "";
+  let pendingThinking = "";
+  let flushTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function flushPending() {
+    flushTimer = null;
+    if (pendingResponse) {
+      dispatch({ type: "APPEND_RESPONSE_TOKEN", text: pendingResponse });
+      pendingResponse = "";
+    }
+    if (pendingThinking) {
+      dispatch({ type: "APPEND_THINK_TOKEN", text: pendingThinking });
+      pendingThinking = "";
+    }
+  }
+
+  function scheduleFlush() {
+    if (flushTimer === null) {
+      flushTimer = setTimeout(flushPending, 32);
+    }
+  }
+  // ────────────────────────────────────────────────────────────────────────────
+
   try {
     for await (const rawChunk of stream) {
       const chunk = Array.isArray(rawChunk) ? rawChunk : [];
@@ -227,14 +253,16 @@ export async function processAgentStream(
 
           if (responseText) {
             responseTextFromStream += responseText;
-            dispatch({ type: "APPEND_RESPONSE_TOKEN", text: responseText });
+            pendingResponse += responseText;
+            scheduleFlush();
             dbg("TOKEN", { len: responseText.length });
           }
 
           if (thinkingText) {
             reasoningContentFromStream += thinkingText;
             hasDispatchedThinking = true;
-            dispatch({ type: "APPEND_THINK_TOKEN", text: thinkingText });
+            pendingThinking += thinkingText;
+            scheduleFlush();
             dbg("THINK_TOKEN", { len: thinkingText.length });
           }
 
@@ -245,7 +273,8 @@ export async function processAgentStream(
           if (reasoningFromKwargs) {
             reasoningContentFromStream += reasoningFromKwargs;
             hasDispatchedThinking = true;
-            dispatch({ type: "APPEND_THINK_TOKEN", text: reasoningFromKwargs });
+            pendingThinking += reasoningFromKwargs;
+            scheduleFlush();
             dbg("THINK_KWARGS", { len: reasoningFromKwargs.length });
           }
         }
@@ -258,6 +287,7 @@ export async function processAgentStream(
       if (mode === "updates") {
         const interrupt = extractInterrupt(data);
         if (interrupt) {
+          if (flushTimer !== null) { clearTimeout(flushTimer); flushPending(); }
           dbg("HITL_INTERRUPT", { actions: interrupt.actionRequests.map((action) => action.name) });
           return {
             responseText: responseTextFromStream.trim(),
@@ -310,7 +340,8 @@ export async function processAgentStream(
             if (reasoningFromKwargs?.trim()) {
               reasoningContentFromStream += reasoningFromKwargs;
               hasDispatchedThinking = true;
-              dispatch({ type: "APPEND_THINK_TOKEN", text: reasoningFromKwargs });
+              pendingThinking += reasoningFromKwargs;
+              scheduleFlush();
               dbg("THINK_FALLBACK", { len: reasoningFromKwargs.length });
             }
           }
@@ -327,6 +358,9 @@ export async function processAgentStream(
     });
     dbg("STREAM_ERROR", { message });
   }
+
+  // Flush any remaining buffered tokens before returning
+  if (flushTimer !== null) { clearTimeout(flushTimer); flushPending(); }
 
   const aiMessageContent = messageContent(lastAiMessage ?? {});
   const finalContent = (aiMessageContent ? stripThinkTags(aiMessageContent) : "") || responseTextFromStream;

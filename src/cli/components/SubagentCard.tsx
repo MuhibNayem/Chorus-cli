@@ -6,7 +6,7 @@ export interface SubagentCardData {
   name: string;
   task: string;
   status: "running" | "done" | "error";
-  tokens: string[];
+  text: string;
   result?: string;
   sessionId?: string;
   expanded?: boolean;
@@ -31,7 +31,7 @@ export function SubagentCard({ card, focused = false }: SubagentCardProps) {
     card.status === "done" ? "green" :
     "red";
 
-  const displayText = card.tokens.join("").trim() || card.result || "";
+  const displayText = card.text.trim() || card.result || "";
 
   return (
     <Box flexDirection="column" marginLeft={2} marginBottom={1}>

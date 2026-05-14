@@ -46,7 +46,7 @@ export async function executeSubagent(
       name: subagentName,
       task: task.slice(0, 200),
       status: "running",
-      tokens: [],
+      text: "",
       sessionId,
     },
   });
@@ -101,7 +101,7 @@ export async function executeSubagent(
       sessionId,
       event: {
         kind: "response",
-        tokens: [`Error: ${message}`],
+        text: `Error: ${message}`,
       },
     });
 

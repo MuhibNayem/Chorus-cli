@@ -77,7 +77,7 @@ function renderEvent(ev: TurnEvent, index: number) {
   }
 
   if (ev.kind === "response") {
-    const text = ev.tokens.join("");
+    const text = ev.text;
     if (!text) return null;
     return (
       <Box key={`resp-${index}`} marginLeft={2} marginBottom={1}>

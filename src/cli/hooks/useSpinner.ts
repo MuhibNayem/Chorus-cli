@@ -3,7 +3,7 @@ import { useState, useEffect } from "react";
 const FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const CURSOR_FRAMES = [" ", "▋"];
 
-export function useSpinner(active: boolean, fps = 12): string {
+export function useSpinner(active: boolean, fps = 3): string {
   const [frame, setFrame] = useState(0);
   useEffect(() => {
     if (!active) { setFrame(0); return; }

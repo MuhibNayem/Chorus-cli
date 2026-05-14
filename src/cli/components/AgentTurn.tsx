@@ -94,7 +94,7 @@ export function AgentTurn({ entry, onToggle, isLive = false, focusedId = null }:
         }
 
         if (ev.kind === "response") {
-          const text = ev.tokens.join("");
+          const text = ev.text;
           const isLastEvent = i === entry.events.length - 1;
           if (!text) return null;
           return (

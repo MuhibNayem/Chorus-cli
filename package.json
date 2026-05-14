@@ -38,6 +38,7 @@
     "build": "rm -rf dist && tsc",
     "start": "node dist/index.js",
     "test": "vitest run",
+    "postinstall": "patch-package",
     "prepublishOnly": "npm run build && npm test"
   },
   "dependencies": {
@@ -60,6 +61,7 @@
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@types/react": "^18.0.0",
+    "patch-package": "^8.0.0",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0",
     "vitest": "^2.0.0"
