@@ -785,13 +785,14 @@ DeepSeek `reasoning_content` fetch intercept in `vllmProvider.ts` stays unchange
 
 # Implementation Phases
 
-### Phase 1 — Provider layer (Day 1)
+### Phase 1 — Provider layer (Day 1) [DONE]
 1. Add `ToolDef`, `ToolCall`, `ModelResponse`, `ToolStreamEvent` to `src/llm/provider.ts`
 2. Implement `VllmProvider.streamWithTools()` — extend SSE loop, accumulate `delta.tool_calls`
 3. Implement `OllamaProvider.streamWithTools()` — Ollama `/api/chat` with `tools:`
 4. Write fixture unit tests for tool-call accumulation before proceeding
 
-### Phase 2 — Core loop + HITL + checkpoint (Day 2)
+### Phase 2 — Core loop + HITL + checkpoint (Day 2) [DONE]
+> Bug fix: checkpoint restore now only activates when `waitingForHitl` is set — prevents completed-turn checkpoints from silently dropping the next user message on multi-turn runs.
 1. Create `src/agent/types.ts`, `hitl.ts`, `btw.ts`, `retry.ts`
 2. Create `src/agent/checkpointer.ts` with `JsonFileCheckpointer`
 3. Create `src/agent/loop.ts` — full while loop
@@ -800,41 +801,53 @@ DeepSeek `reasoning_content` fetch intercept in `vllmProvider.ts` stays unchange
 5. Update `src/cli/hooks/useAgentStream.ts` — `hitlGate.resolve()`, wire `/btw`
 6. Simplify `src/cli/agent/streamProcessor.ts` — consume `AgentEvent` directly
 
-### Phase 3 — Memory + middleware (Day 3)
+### Phase 3 — Memory + middleware (Day 3) [DONE]
 1. Create `src/agent/memory-store.ts` with `FileMemoryStore`
 2. Create `src/agent/middleware.ts` with all four built-in middleware
 3. Merge `harness/projectMemory.ts` into `FileMemoryStore`
 4. Move auto-compaction from `context/compaction.ts` into `SummarizationMiddleware`
 5. Wire summarization threshold to `contextWindows.ts`
+> Implementation note: `projectMemory.ts` retained its JSON-blob format to avoid breaking existing saved state; `FileMemoryStore` is the general-purpose key-value layer for new features. Pre-loop compaction in `useAgentStream.ts` removed — `SummarizationMiddleware` now handles it at 85% of model context window each round. `CompactionResult` extended with `messages` field so the middleware can use the compacted array directly. 15 new unit/integration tests in `tests/middleware.test.ts`.
 
-### Phase 4 — Cleanup (Day 4)
+### Phase 4 — Cleanup (Day 4) [DONE]
 1. Delete `patches/deepagents+1.10.1.patch`
 2. Remove `deepagents`, `@langchain/langgraph` from `package.json`
 3. Run `tsc --noEmit` + fix type errors
 4. Full smoke test: long tool chain, HITL approve/deny, `/btw` injection, crash recovery
+> `patches/` was already empty (patch had been manually removed earlier). `deepagents` and `@langchain/langgraph` removed from `package.json`. All five `deepagents`-importing files migrated: `subagents/planner|vapt|builder.ts` now use local `SubAgentDef` type; `subagents/index.ts` re-exports it; `subagents/runtime.ts` replaces `createDeepAgent` + LangGraph stream parser with a clean `runAgentLoop` call; `subagents/delegateTool.ts` accepts `{ provider, modelName }` instead of `BaseChatModel`; `agentRunner.ts` + `useAgentStream.ts` drop `delegateModel` throughout. `tsc --noEmit` clean, 118/118 tests pass. `langchain`, `@langchain/core`, `@langchain/ollama`, `@langchain/openai` retained (Phase 8 scope).
 
-### Phase 5 — Swarm core (Days 5–6)
+### Phase 5 — Swarm core (Days 5–6) [DONE]
 1. Create `src/swarm/types.ts`, `session.ts`, `circuit-breaker.ts`, `validator.ts`, `trace.ts`
 2. Create `src/swarm/handoff.ts` — `createHandoffTools()`, `buildAgentContext()` with context modes
 3. Create `src/swarm/orchestrator.ts` — swarm loop as `AsyncGenerator<SwarmEvent>`
 4. Create `src/swarm/registry.ts` — extend `AgentDef` loader with swarm fields
 5. Add `set_artifact` / `get_artifact` artifact store tools
 
-### Phase 6 — Supervisor + presets (Day 7)
+### Phase 6 — Supervisor + presets (Day 7) [DONE]
 1. Create `src/swarm/supervisor.ts` — coordinator routes to specialists, validates results
 2. Ship 3 built-in presets: `plan-build-review`, `research-synthesize`, `vapt-report`
 3. Wire presets to `/swarm <preset>` shortcut
 
-### Phase 7 — UI integration (Day 8)
-1. Add `SwarmHandoffEvent` + `SwarmAgentEvent` to `src/cli/state/feedReducer.ts`
-2. Create `src/cli/components/SwarmHandoffCard.tsx`
-3. Add all new slash commands to `src/cli/commands.ts` and `App.tsx`
-4. Per-agent collapsible sections in feed
+### Phase 7 — UI integration (Day 8) [DONE] ✅
+1. Added `SwarmAgentSection`, `SwarmHandoffRecord`, `swarm-turn` FeedEntry to `feedReducer.ts`
+2. Added 13 swarm FeedActions (SWARM_START → SWARM_TOGGLE_AGENT) with full reducer coverage
+3. Created `SwarmHandoffCard.tsx` — directional arrow (from→to) with task excerpt
+4. Created `SwarmAgentCard.tsx` — per-agent collapsible section with status, stream, tools
+5. Created `SwarmTurnCard.tsx` — wraps full swarm run; interleaves sections and handoffs
+6. Updated `Feed.tsx` — fixed lastTurnIndex scan to include running swarm-turns; renders SwarmTurnCard
+7. Updated `App.tsx` — runSwarmPreset dispatches typed swarm actions; AbortController ref; stopSwarm/listSwarmTraces callbacks
+8. Updated `commands.ts` — added /swarm-stop, /swarm-traces slash commands
+9. 26 new reducer tests; total 175/175 passing
 
-### Phase 8 — Drop all LangChain (Day 9, optional)
-Remove `@langchain/core`, `@langchain/openai`, `@langchain/ollama`, `langchain`.
+### Phase 8 — Drop all LangChain (Day 9, optional) [DONE] ✅
+Remove `@langchain/core`, `@langchain/openai`, `@langchain/ollama`, `langchain`, `langsmith`.
 Delete `createChatModel()` from `LLMProvider` (only called by deepagents — unused after Phase 2).
 Remove `AIMessage`, `HumanMessage`, `SystemMessage` from `agentRunner.ts`.
+> Native `tool()` helper created in `src/tools/tool.ts` — full Zod validation, zero dependencies.
+> `OllamaProvider.generate()` and `.stream()` rewritten to native fetch against `/api/chat`.
+> `agents/generator.ts` migrated to `provider.generate()`.
+> `deepAgentToolMiddleware.ts` deleted (deepagents compatibility layer, no longer referenced).
+> 50 packages removed from node_modules; 173/173 tests pass; `tsc --noEmit` clean.
 
 ---
 

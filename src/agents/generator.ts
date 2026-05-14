@@ -1,7 +1,6 @@
 import { getDefaultProvider, getProviderModel } from "../llm/index.js";
-import { AIMessage, HumanMessage, SystemMessage } from "@langchain/core/messages";
 
-const META_PROMPT = `You are a senior system-prompt architect for production coding agents. Given a plain-English description of an AI agent's purpose, generate a precise, comprehensive agent definition.
+const META_PROMPT = `You are a senior system-prompt architect for production coding agents named Chorus. Always use the prefix "Chorus" to refer to yourself in the generated system prompts. Given a plain-English description of an AI agent's purpose, generate a precise, comprehensive agent definition.
 
 Respond with ONLY a valid JSON object — no markdown fences, no extra text, no explanation. Use this exact shape:
 {
@@ -113,18 +112,13 @@ ${generatedPrompt}`;
 
 export async function generateAgentDef(userDescription: string): Promise<GeneratedAgent> {
   const provider = await getDefaultProvider();
-  const model = await provider.createChatModel(getProviderModel(provider.name));
+  const result = await provider.generate({
+    model: getProviderModel(provider.name),
+    systemPrompt: META_PROMPT,
+    messages: [{ role: "user", content: `Create an agent for: ${userDescription}` }],
+  });
 
-  const response = await model.invoke([
-    new SystemMessage(META_PROMPT),
-    new HumanMessage(`Create an agent for: ${userDescription}`),
-  ]);
-
-  const content = typeof response.content === "string"
-    ? response.content
-    : Array.isArray(response.content)
-      ? response.content.map((c) => (typeof c === "string" ? c : (c as { text?: string }).text ?? "")).join("")
-      : "";
+  const content = result.text;
 
   const jsonMatch = content.match(/\{[\s\S]*\}/);
   if (!jsonMatch) throw new Error("LLM did not return valid JSON");

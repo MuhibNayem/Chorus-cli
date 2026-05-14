@@ -9,6 +9,7 @@ import { StatusBar, type AgentState } from "./components/StatusBar.js";
 import { SuggestionBox, type Suggestion } from "./components/SuggestionBox.js";
 import { SelectBox, type SelectItem } from "./components/SelectBox.js";
 import { SessionView } from "./components/SessionView.js";
+import { WelcomeScreen } from "./components/WelcomeScreen.js";
 import { feedReducer, initialFeedState } from "./state/feedReducer.js";
 import { useAgentStream } from "./hooks/useAgentStream.js";
 import { handleSlashCommand, SLASH_COMMANDS } from "./commands.js";
@@ -27,6 +28,9 @@ import { deleteAgent } from "../agents/storage.js";
 import { AgentCreator } from "./components/AgentCreator.js";
 import { AgentViewer } from "./components/AgentViewer.js";
 import { ApprovalCard } from "./components/ApprovalCard.js";
+import { runSwarm } from "../swarm/orchestrator.js";
+import { buildPresetSwarm } from "../swarm/presets/index.js";
+import { createProvider } from "../llm/registry.js";
 
 type SelectionMode = {
   title: string;
@@ -404,7 +408,7 @@ export function App() {
 
   const currentSession = sessionManager.getCurrent();
 
-  const { submit, clearHistory, loadSession, pendingApproval, respondToApproval } = useAgentStream({
+  const { submit, submitBtw, clearHistory, loadSession, pendingApproval, respondToApproval } = useAgentStream({
     dispatch,
     onTokensUpdate: setTokens,
     initialMessages: currentSession?.messages,
@@ -579,6 +583,187 @@ export function App() {
   const resumeSessionRef = useRef(onResumeSession);
   useEffect(() => { resumeSessionRef.current = onResumeSession; }, [onResumeSession]);
 
+  const swarmGenRef = useRef<AsyncGenerator<import("../swarm/types.js").SwarmEvent> | null>(null);
+  const stopSwarm = useCallback(() => {
+    if (swarmGenRef.current) {
+      void swarmGenRef.current.return(undefined as never);
+      swarmGenRef.current = null;
+    }
+  }, []);
+
+  const listSwarmTraces = useCallback(() => {
+    const tracesDir = path.join(
+      process.env.CHORUS_HOME_DIR ?? path.join(process.env.HOME ?? "~", ".chorus"),
+      "swarm-traces",
+    );
+    try {
+      const files = fs.readdirSync(tracesDir).filter((f) => f.endsWith(".jsonl"));
+      if (files.length === 0) {
+        dispatch({ type: "APPEND_SYSTEM", id: `traces-${Date.now()}`, text: "No swarm traces found." });
+      } else {
+        const rows = files.map((f) => {
+          try {
+            const stat = fs.statSync(path.join(tracesDir, f));
+            const kb = (stat.size / 1024).toFixed(1);
+            return `  ${f.replace(".jsonl", "")}  ${kb}KB`;
+          } catch {
+            return `  ${f}`;
+          }
+        });
+        dispatch({ type: "APPEND_SYSTEM", id: `traces-${Date.now()}`, text: `Swarm traces:\n${rows.join("\n")}` });
+      }
+    } catch {
+      dispatch({ type: "APPEND_SYSTEM", id: `traces-${Date.now()}`, text: `No traces directory found at ${tracesDir}` });
+    }
+  }, [dispatch]);
+
+  const runSwarmPreset = useCallback(
+    (presetName: string, task: string) => {
+      const rawProvider = sessionProvider ?? displayLabel.split(":")[0] ?? "ollama";
+      const normalizedProvider = normalizeProviderName(rawProvider) ?? "ollama";
+      const model = sessionModel ?? getProviderModel(normalizedProvider);
+      void (async () => {
+        let currentSwarmId = "";
+        try {
+          const provider = createProvider(normalizedProvider);
+          const config = buildPresetSwarm(presetName, task, provider, model);
+          const gen = runSwarm(config);
+          swarmGenRef.current = gen;
+          for await (const event of gen) {
+            switch (event.type) {
+              case "swarm-start":
+                currentSwarmId = event.swarmId;
+                dispatch({
+                  type: "SWARM_START",
+                  swarmId: event.swarmId,
+                  presetName,
+                  agents: event.agents,
+                  startedAt: Date.now(),
+                });
+                break;
+              case "agent-start":
+                dispatch({
+                  type: "SWARM_AGENT_START",
+                  swarmId: currentSwarmId,
+                  agentName: event.agent,
+                  contextMode: event.contextMode,
+                  startedAt: Date.now(),
+                });
+                break;
+              case "token":
+                if ("agent" in event) {
+                  dispatch({
+                    type: "SWARM_AGENT_TOKEN",
+                    swarmId: currentSwarmId,
+                    agentName: (event as { agent: string }).agent,
+                    text: event.text,
+                  });
+                }
+                break;
+              case "tool-start":
+                if ("agent" in event) {
+                  const e = event as { agent: string; id: string; name: string; args: Record<string, unknown> };
+                  dispatch({
+                    type: "SWARM_TOOL_START",
+                    swarmId: currentSwarmId,
+                    agentName: e.agent,
+                    toolCall: { id: e.id, name: e.name, args: e.args, status: "running" },
+                  });
+                }
+                break;
+              case "tool-done":
+                if ("agent" in event) {
+                  const e = event as { agent: string; id: string; name: string; result: string };
+                  dispatch({
+                    type: "SWARM_TOOL_DONE",
+                    swarmId: currentSwarmId,
+                    agentName: e.agent,
+                    toolId: e.id,
+                    result: e.result,
+                    status: "done",
+                  });
+                }
+                break;
+              case "tool-error":
+                if ("agent" in event) {
+                  const e = event as { agent: string; id: string; error: string };
+                  dispatch({
+                    type: "SWARM_TOOL_DONE",
+                    swarmId: currentSwarmId,
+                    agentName: e.agent,
+                    toolId: e.id,
+                    result: e.error,
+                    status: "error",
+                  });
+                }
+                break;
+              case "agent-done":
+                dispatch({
+                  type: "SWARM_AGENT_DONE",
+                  swarmId: currentSwarmId,
+                  agentName: event.agent,
+                  completedAt: Date.now(),
+                });
+                break;
+              case "handoff":
+                dispatch({
+                  type: "SWARM_HANDOFF",
+                  swarmId: currentSwarmId,
+                  from: event.from,
+                  to: event.to,
+                  taskDescription: event.taskDescription,
+                  reasoning: event.reasoning,
+                });
+                break;
+              case "artifact-set":
+                dispatch({
+                  type: "SWARM_ARTIFACT",
+                  swarmId: currentSwarmId,
+                  key: event.key,
+                });
+                break;
+              case "validation-fail":
+                dispatch({
+                  type: "SWARM_VALIDATION_FAIL",
+                  swarmId: currentSwarmId,
+                  agentName: event.agent,
+                  reason: event.reason,
+                });
+                break;
+              case "circuit-break":
+                dispatch({
+                  type: "SWARM_CIRCUIT_BREAK",
+                  swarmId: currentSwarmId,
+                  agent: event.agent,
+                  reason: event.reason,
+                });
+                break;
+              case "swarm-done":
+                dispatch({
+                  type: "SWARM_DONE",
+                  swarmId: event.swarmId,
+                  handoffCount: event.handoffCount,
+                  totalAgentRounds: event.totalAgentRounds,
+                  completedAt: Date.now(),
+                });
+                break;
+            }
+          }
+        } catch (err) {
+          if (currentSwarmId) {
+            dispatch({ type: "SWARM_ERROR", swarmId: currentSwarmId, message: String(err) });
+          } else {
+            dispatch({ type: "APPEND_SYSTEM", id: `swarm-err-${Date.now()}`,
+              text: `Swarm error: ${err instanceof Error ? err.message : String(err)}` });
+          }
+        } finally {
+          swarmGenRef.current = null;
+        }
+      })();
+    },
+    [dispatch, sessionProvider, sessionModel, displayLabel],
+  );
+
   const onNewSession = useCallback(() => {
     sessionManager.createSession();
     clearHistory();
@@ -631,7 +816,11 @@ export function App() {
         showResumeSelect,
         showDefaultModelSelect: showDefaultProviderSelect,
         showAgents,
+        submitBtw,
         showApiKeysConfig: () => setShowingApiKeysConfig(true),
+        runSwarmPreset,
+        stopSwarm,
+        listSwarmTraces,
         showModeModelSelect: (mode) => {
           const provider = sessionProvider ?? displayLabel.split(":")[0];
           setSelectionMode({
@@ -697,7 +886,7 @@ export function App() {
       const expanded = expandMentions(trimmed, workspaceFiles.current);
       await submit(expanded);
     },
-    [submit, clearHistory, feedState.processing, exit, suggestionIndex, activeSuggestions, slashSuggestions, onResumeSession, onNewSession, displayLabel, sessionProvider, sessionModel, executionMode, approvalPolicy, advisorEnabled, showModelSelectForProvider, showProviderSelect, showResumeSelect, showDefaultProviderSelect, showAgents, showingApiKeysConfig]
+    [submit, clearHistory, feedState.processing, exit, suggestionIndex, activeSuggestions, slashSuggestions, onResumeSession, onNewSession, displayLabel, sessionProvider, sessionModel, executionMode, approvalPolicy, advisorEnabled, showModelSelectForProvider, showProviderSelect, showResumeSelect, showDefaultProviderSelect, showAgents, showingApiKeysConfig, runSwarmPreset, stopSwarm, listSwarmTraces]
   );
 
   const agentState = useMemo<AgentState>(() => {
@@ -846,12 +1035,24 @@ export function App() {
 
   return (
     <Box flexDirection="column" height="100%">
-      <Feed
-        entries={feedState.entries}
-        processing={feedState.processing}
-        onToggle={(id) => dispatch({ type: "TOGGLE_EXPANDED", id })}
-        focusedId={focusedId}
-      />
+      {feedState.entries.length === 0 ? (
+        <WelcomeScreen
+          modelLabel={displayLabel}
+          workspace={WORKSPACE}
+          executionMode={executionMode}
+          approvalPolicy={approvalPolicy}
+        />
+      ) : (
+        <Feed
+          entries={feedState.entries}
+          processing={feedState.processing}
+          onToggle={(id) => dispatch({ type: "TOGGLE_EXPANDED", id })}
+          onToggleSwarmAgent={(swarmId, sectionId) =>
+            dispatch({ type: "SWARM_TOGGLE_AGENT", swarmId, sectionId })
+          }
+          focusedId={focusedId}
+        />
+      )}
       {pendingApproval ? (
         <ApprovalCard approval={pendingApproval} />
       ) : selectionMode ? (

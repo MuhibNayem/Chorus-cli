@@ -7,9 +7,6 @@ import type { FeedAction } from "../src/cli/state/feedReducer.js";
 function createMockProvider(responses: Record<string, string>): LLMProvider {
   return {
     name: "ollama",
-    async createChatModel() {
-      throw new Error("Not implemented");
-    },
     async generate(input) {
       // Use the system prompt to determine which role this is
       const role = input.systemPrompt?.includes("research analyst")
@@ -30,6 +27,9 @@ function createMockProvider(responses: Record<string, string>): LLMProvider {
     },
     async *stream() {
       yield { type: "response.completed" as const };
+    },
+    async *streamWithTools() {
+      yield { type: "done" as const, response: { content: "" } };
     },
     async health() {
       return { ok: true, provider: "ollama" };
@@ -95,9 +95,9 @@ describe("executeWorkers", () => {
     const dispatched: FeedAction[] = [];
     const failingProvider: LLMProvider = {
       name: "ollama",
-      async createChatModel() { throw new Error("Not implemented"); },
       async generate() { throw new Error("Network error"); },
       async *stream() { yield { type: "response.completed" as const }; },
+      async *streamWithTools() { yield { type: "done" as const, response: { content: "" } }; },
       async health() { return { ok: true, provider: "ollama" }; },
     };
 

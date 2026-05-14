@@ -1,9 +1,7 @@
 import { useCallback, useRef, useEffect, useState } from "react";
 import type { Dispatch } from "react";
-import { shouldCompact, compactMessages } from "../../context/compaction.js";
 import { countMessagesTokens } from "../../context/tokenizer.js";
 import {
-  getContextWindow,
   getProviderModel,
   getPreferredProviderName,
   normalizeProviderName,
@@ -12,15 +10,17 @@ import { SYSTEM_PROMPT } from "../../prompts/system.js";
 import { loadAgents } from "../../agents/loader.js";
 import type { FeedAction } from "../state/feedReducer.js";
 import {
-  decisionsForInterrupt,
+  enqueueBtw,
   executeWorkerPhase,
   finalizeTurn,
   prepareHarness,
+  resolveHitlDecision,
+  resetAgentRuntime,
   resumeAgentStream,
   runAgentStream,
   type PendingAgentRun,
 } from "./agent/agentRunner.js";
-import type { Message } from "./agent/types.js";
+import type { ActiveAgentRun, Message } from "./agent/types.js";
 import type { HitlInterrupt } from "../agent/streamProcessor.js";
 import type { ApprovalPolicy, ExecutionMode } from "../../harness/types.js";
 
@@ -83,7 +83,7 @@ export function useAgentStream({
   const executionModeRef = useRef<ExecutionMode>(executionMode);
   const approvalPolicyRef = useRef<ApprovalPolicy>(approvalPolicy);
   const pendingRunRef = useRef<PendingAgentRun | null>(null);
-  const sessionApprovedToolsRef = useRef<Set<string>>(new Set());
+  const activeRunRef = useRef<ActiveAgentRun | null>(null);
   const [pendingApproval, setPendingApproval] = useState<PendingApproval | null>(null);
 
   useEffect(() => {
@@ -99,17 +99,6 @@ export function useAgentStream({
     approvalPolicyRef.current = approvalPolicy;
   }, [approvalPolicy]);
 
-  const getContextLimit = useCallback(() => {
-    const p = providerNameRef.current;
-    const m = modelNameRef.current;
-    if (m) return getContextWindow(m, p ?? undefined);
-    if (p) {
-      const provider = normalizeProviderName(p);
-      if (provider) return getContextWindow(getProviderModel(provider), provider);
-    }
-    const preferred = getPreferredProviderName();
-    return getContextWindow(getProviderModel(preferred), preferred);
-  }, []);
 
   const submit = useCallback(
     async (text: string) => {
@@ -150,35 +139,13 @@ export function useAgentStream({
       const tokenCount = countMessagesTokens(messagesRef.current, effectiveSystemPrompt);
       onTokensUpdate(tokenCount);
 
-      const contextLimit = getContextLimit();
-      if (await shouldCompact(messagesRef.current, effectiveSystemPrompt, contextLimit)) {
-        dispatch({
-          type: "APPEND_SYSTEM",
-          id: `compact-${Date.now()}`,
-          text: "Compacting conversation context…",
-        });
-        const result = await compactMessages(
-          messagesRef.current,
-          effectiveSystemPrompt,
-          contextLimit
-        );
-        messagesRef.current = [
-          {
-            role: "system",
-            content: `[Previous conversation summary: ${result.summary}]`,
-          },
-          ...messagesRef.current.slice(-20),
-        ];
-        onTokensUpdate(result.compressedCount);
-      }
-
       try {
         const parsedAgentModel = parseAgentModelOverride(agentModelOverride);
         const resolvedProviderName = parsedAgentModel.providerName ?? providerNameRef.current ?? undefined;
         const resolvedModelName = parsedAgentModel.modelName ?? modelNameRef.current ?? undefined;
         const activeMode = executionModeRef.current;
         const activeApprovalPolicy = approvalPolicyRef.current;
-        const { prepared, harnessRun, model, provider } = await prepareHarness(
+        const { prepared, harnessRun, provider, modelName: resolvedModel } = await prepareHarness(
           activeText,
           messagesRef.current,
           resolvedProviderName,
@@ -188,7 +155,6 @@ export function useAgentStream({
         );
 
         // Execute worker phase (parallel pre-processing)
-        const resolvedModel = resolvedModelName ?? getProviderModel(provider.name);
         const workerContext = activeMode === "plan"
           ? ""
           : await executeWorkerPhase(
@@ -209,7 +175,8 @@ export function useAgentStream({
           messages: messagesRef.current,
           prepared,
           harnessRun,
-          model,
+          provider,
+          modelName: resolvedModel,
           runtimePrompt: enrichedPrompt,
           parentTurnId: turnId,
           mode: activeMode,
@@ -218,19 +185,21 @@ export function useAgentStream({
         };
         const streamResult = await runAgentStream({
           messages: messagesRef.current,
-          model,
+          provider,
+          modelName: resolvedModel,
           runtimePrompt: enrichedPrompt,
           dispatch,
           parentTurnId: turnId,
           mode: activeMode,
           approvalPolicy: activeApprovalPolicy,
-          sessionApprovedTools: sessionApprovedToolsRef.current,
         });
         if (streamResult.interrupt) {
+          activeRunRef.current = streamResult.activeRun ?? null;
           pendingRunRef.current = pendingRun;
           setPendingApproval({ interrupt: streamResult.interrupt });
           return;
         }
+        activeRunRef.current = null;
         messagesRef.current = finalizeTurn(
           messagesRef.current,
           prepared,
@@ -253,41 +222,44 @@ export function useAgentStream({
         });
       }
     },
-    [dispatch, onTokensUpdate, getContextLimit]
+    [dispatch, onTokensUpdate]
   );
 
   const respondToApproval = useCallback(
     async (decision: "approve" | "approve_session" | "deny") => {
       const pendingRun = pendingRunRef.current;
       const pending = pendingApproval;
-      if (!pendingRun || !pending) return;
-
-      if (decision === "approve_session") {
-        for (const action of pending.interrupt.actionRequests) {
-          sessionApprovedToolsRef.current.add(action.name);
-        }
-      }
+      const activeRun = activeRunRef.current;
+      if (!pendingRun || !pending || !activeRun || !pending.interrupt.resumeKey) return;
 
       pendingRunRef.current = null;
+      activeRunRef.current = null;
       setPendingApproval(null);
 
       try {
+        const toolNames = pending.interrupt.actionRequests.map((action) => action.name);
+        resolveHitlDecision(
+          pending.interrupt.resumeKey,
+          decision === "deny"
+            ? { type: "reject", message: "Denied by user." }
+            : decision === "approve_session"
+            ? { type: "approve_session", toolNames }
+            : { type: "approve" },
+        );
         const streamResult = await resumeAgentStream({
           messages: pendingRun.messages,
-          model: pendingRun.model,
+          provider: pendingRun.provider,
+          modelName: pendingRun.modelName,
           runtimePrompt: pendingRun.runtimePrompt,
           dispatch,
           parentTurnId: pendingRun.parentTurnId,
           mode: pendingRun.mode,
           approvalPolicy: pendingRun.approvalPolicy,
-          sessionApprovedTools: sessionApprovedToolsRef.current,
-          decisions: decisionsForInterrupt(
-            pending.interrupt,
-            decision === "deny" ? "deny" : "approve"
-          ),
+          activeRun,
         });
 
         if (streamResult.interrupt) {
+          activeRunRef.current = streamResult.activeRun ?? null;
           pendingRunRef.current = pendingRun;
           setPendingApproval({ interrupt: streamResult.interrupt });
           return;
@@ -318,10 +290,19 @@ export function useAgentStream({
     [dispatch, onTokensUpdate, pendingApproval]
   );
 
+  const submitBtw = useCallback((text: string) => {
+    if (!pendingRunRef.current && !activeRunRef.current) {
+      return false;
+    }
+    enqueueBtw(text);
+    return true;
+  }, []);
+
   const clearHistory = useCallback(() => {
     messagesRef.current = [];
     pendingRunRef.current = null;
-    sessionApprovedToolsRef.current.clear();
+    activeRunRef.current = null;
+    resetAgentRuntime();
     setPendingApproval(null);
   }, []);
 
@@ -329,5 +310,5 @@ export function useAgentStream({
     messagesRef.current = msgs;
   }, []);
 
-  return { submit, clearHistory, loadSession, pendingApproval, respondToApproval };
+  return { submit, submitBtw, clearHistory, loadSession, pendingApproval, respondToApproval };
 }

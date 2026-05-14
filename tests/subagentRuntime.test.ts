@@ -1,53 +1,89 @@
-import { describe, expect, it, vi } from "vitest";
+import * as fs from "fs";
+import * as path from "path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { executeSubagent } from "../src/subagents/runtime.js";
+import type { LLMProvider, ToolDef, ToolStreamEvent } from "../src/llm/provider.js";
 import type { FeedAction } from "../src/cli/state/feedReducer.js";
 
-// Mock deepagents
-vi.mock("deepagents", () => ({
-  createDeepAgent: vi.fn(() => ({
-    stream: vi.fn(async () => {
-      // Return a mock stream
-      return (async function* () {
-        yield ["messages", [{ type: "AIMessageChunk", role: "assistant", content: "Hello from subagent" }]];
-        yield ["updates", { agent: { messages: [{ type: "AIMessage", role: "assistant", content: "Final response" }] } }];
-      })();
-    }),
-  })),
-}));
+class FakeProvider implements LLMProvider {
+  readonly name = "ollama" as const;
+
+  constructor(private readonly response: string = "Hello from subagent") {}
+
+  async generate() { return { text: "", model: "fake" }; }
+  async *stream(): AsyncIterable<any> { yield { type: "response.completed" as const }; }
+
+  async *streamWithTools(_input: { model: string; messages: any[]; systemPrompt?: string; tools: ToolDef[] }): AsyncIterable<ToolStreamEvent> {
+    yield { type: "token", text: this.response };
+    yield { type: "done", response: { content: this.response } };
+  }
+
+  async health() { return { ok: true, provider: this.name }; }
+}
+
+let homeDir: string;
+
+beforeEach(() => {
+  homeDir = fs.mkdtempSync(path.join("/tmp", "chorus-subagent-"));
+  process.env.CHORUS_HOME_DIR = homeDir;
+});
+
+afterEach(() => {
+  delete process.env.CHORUS_HOME_DIR;
+});
 
 describe("executeSubagent", () => {
   it("executes a known subagent and returns its response", async () => {
     const dispatched: FeedAction[] = [];
     const dispatch = (action: FeedAction) => dispatched.push(action);
 
-    const mockModel = {} as import("@langchain/core/language_models/chat_models").BaseChatModel;
-
     const result = await executeSubagent({
       subagentName: "planner",
       task: "Design a new API",
-      model: mockModel,
+      provider: new FakeProvider("Hello from subagent"),
+      modelName: "fake-model",
       dispatch,
       parentTurnId: "turn-1",
     });
 
-    expect(result).toContain("Hello from subagent");
+    expect(result).toBe("Hello from subagent");
 
     const addActions = dispatched.filter((a) => a.type === "ADD_SUBAGENT");
     expect(addActions).toHaveLength(1);
     expect((addActions[0] as { subagent: { name: string } }).subagent.name).toBe("planner");
+
+    const finalizeActions = dispatched.filter((a) => a.type === "FINALIZE_SUBAGENT");
+    expect(finalizeActions).toHaveLength(1);
+  });
+
+  it("dispatches token events during execution", async () => {
+    const dispatched: FeedAction[] = [];
+    const dispatch = (action: FeedAction) => dispatched.push(action);
+
+    await executeSubagent({
+      subagentName: "vapt",
+      task: "Find vulnerabilities",
+      provider: new FakeProvider("Scan complete"),
+      modelName: "fake-model",
+      dispatch,
+      parentTurnId: "turn-2",
+    });
+
+    const tokenActions = dispatched.filter((a) => a.type === "APPEND_SUBAGENT_TOKEN");
+    expect(tokenActions.length).toBeGreaterThan(0);
   });
 
   it("throws for unknown subagent", async () => {
     const dispatch = () => {};
-    const mockModel = {} as import("@langchain/core/language_models/chat_models").BaseChatModel;
 
     await expect(
       executeSubagent({
         subagentName: "unknown-subagent",
         task: "Do something",
-        model: mockModel,
+        provider: new FakeProvider(),
+        modelName: "fake-model",
         dispatch,
-        parentTurnId: "turn-1",
+        parentTurnId: "turn-3",
       })
     ).rejects.toThrow("Unknown subagent");
   });

@@ -1,6 +1,6 @@
-import { tool } from "@langchain/core/tools";
+import { tool } from "../tools/tool.js";
 import { z } from "zod";
-import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
+import type { LLMProvider } from "../llm/provider.js";
 import type { Dispatch } from "react";
 import type { FeedAction } from "../cli/state/feedReducer.js";
 import { executeSubagent } from "./runtime.js";
@@ -8,11 +8,12 @@ import { executeSubagent } from "./runtime.js";
 const SUBAGENT_NAMES = ["planner", "vapt", "builder"] as const;
 
 export function createDelegateTool(options: {
-  model: BaseChatModel;
+  provider: LLMProvider;
+  modelName: string;
   dispatch: Dispatch<FeedAction>;
   parentTurnId: string;
 }) {
-  const { model, dispatch, parentTurnId } = options;
+  const { provider, modelName, dispatch, parentTurnId } = options;
 
   return tool(
     async ({ subagent, task }: { subagent: string; task: string }) => {
@@ -24,7 +25,8 @@ export function createDelegateTool(options: {
         const result = await executeSubagent({
           subagentName: subagent,
           task,
-          model,
+          provider,
+          modelName,
           dispatch,
           parentTurnId,
         });

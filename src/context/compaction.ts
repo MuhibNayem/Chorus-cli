@@ -17,6 +17,7 @@ export interface CompactionResult {
   summary: string;
   originalCount: number;
   compressedCount: number;
+  messages: Array<{ role: string; content: string; reasoning_content?: string }>;
 }
 
 export async function shouldCompact(
@@ -111,6 +112,7 @@ Provide a single summary paragraph.`;
     summary,
     originalCount,
     compressedCount,
+    messages: compressedMessages,
   };
 }
 

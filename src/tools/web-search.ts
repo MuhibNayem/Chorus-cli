@@ -1,4 +1,4 @@
-import { tool } from "@langchain/core/tools";
+import { tool } from "./tool.js";
 import { z } from "zod";
 import { getSerperApiKey, getGoogleCseApiKey, getGoogleCseId, getWeatherApiKey } from "../settings/storage.js";
 

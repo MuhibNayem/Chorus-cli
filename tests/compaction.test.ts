@@ -17,13 +17,28 @@ vi.mock("../src/context/tokenizer.js", () => ({
   },
 }));
 
-// Mock streamOllama so no HTTP calls
-vi.mock("../src/ollama/client.js", () => ({
-  streamOllama: ({ onResponse, onComplete }: any) => {
-    onResponse("Test summary.");
-    onComplete?.();
-  },
-}));
+// Mock the default provider so compactMessages never hits the network
+vi.mock("../src/llm/registry.js", async (importOriginal) => {
+  const mod = await importOriginal<typeof import("../src/llm/registry.js")>();
+  return {
+    ...mod,
+    getDefaultProvider: async () => ({
+      name: "ollama" as const,
+      async generate() {
+        return { text: "Test summary.", model: "fake" };
+      },
+      async *stream() {
+        yield { type: "response.completed" as const };
+      },
+      async *streamWithTools() {
+        yield { type: "done" as const, response: { content: "" } };
+      },
+      async health() {
+        return { ok: true, provider: "ollama" as const };
+      },
+    }),
+  };
+});
 
 vi.mock("../src/llm/retry.js", () => ({
   withRetry: async (fn: () => Promise<unknown>) => fn(),

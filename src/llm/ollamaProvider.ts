@@ -1,17 +1,49 @@
-import { initChatModel } from "langchain";
 import { getProviderSettings } from "../settings/storage.js";
 import type { ProviderName } from "./config.js";
+import { ReasoningStreamParser } from "./reasoningParser.js";
 import type {
   ChatMessage,
   GenerationRequest,
   GenerationResult,
   LLMProvider,
+  ModelResponse,
   ProviderHealth,
   StreamEvent,
+  ToolCall,
+  ToolDef,
+  ToolStreamEvent,
 } from "./provider.js";
 
 type OllamaProviderOptions = {
   baseUrl?: string;
+};
+
+type OllamaChatChunk = {
+  message?: {
+    role?: string;
+    content?: string;
+    thinking?: string;
+    reasoning_content?: string;
+    tool_calls?: OllamaToolCall[];
+  };
+  done?: boolean;
+  error?: string;
+};
+
+type OllamaToolCall = {
+  id?: string;
+  type?: string;
+  function?: {
+    name?: string;
+    arguments?: string | Record<string, unknown>;
+  };
+};
+
+type OllamaToolAccumulator = {
+  id: string;
+  type: "function";
+  name: string;
+  arguments: string;
 };
 
 export class OllamaProvider implements LLMProvider {
@@ -23,37 +55,249 @@ export class OllamaProvider implements LLMProvider {
     this.baseUrl = options.baseUrl ?? process.env.OLLAMA_BASE_URL ?? settings.baseUrl ?? "http://localhost:11434";
   }
 
-  async createChatModel(model: string) {
-    return initChatModel(`ollama:${model}`, {
-      baseUrl: this.baseUrl,
-    });
-  }
-
   async generate(input: GenerationRequest): Promise<GenerationResult> {
-    const model = await this.createChatModel(input.model);
-    const response = await model.invoke(this.toMessages(input));
+    const response = await fetch(`${this.baseUrl}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: input.model,
+        messages: this.toMessages(input),
+        stream: false,
+      }),
+    });
+
+    if (!response.ok) {
+      const detail = await this.readErrorDetail(response);
+      throw new Error(`ollama generate failed: ${response.status}${detail}`);
+    }
+
+    const data = (await response.json()) as OllamaChatChunk;
+    if (data.error) {
+      throw new Error(data.error);
+    }
 
     return {
-      text: this.contentToString(response.content),
+      text: data.message?.content ?? "",
       model: input.model,
     };
   }
 
   async *stream(input: GenerationRequest): AsyncIterable<StreamEvent> {
     try {
-      const model = await this.createChatModel(input.model);
-      for await (const chunk of await model.stream(this.toMessages(input))) {
-        const text = this.contentToString(chunk.content);
-        if (text) {
-          yield { type: "response.delta", text };
-        }
+      const response = await fetch(`${this.baseUrl}/api/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: input.model,
+          messages: this.toMessages(input),
+          stream: true,
+        }),
+      });
+
+      if (!response.ok || !response.body) {
+        const detail = await this.readErrorDetail(response);
+        throw new Error(`ollama stream failed: ${response.status}${detail}`);
       }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() ?? "";
+
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed) continue;
+
+            const chunk = JSON.parse(trimmed) as OllamaChatChunk;
+            if (chunk.error) {
+              throw new Error(chunk.error);
+            }
+
+            const text = chunk.message?.content ?? "";
+            if (text) {
+              yield { type: "response.delta", text };
+            }
+          }
+        }
+
+        const tail = buffer.trim();
+        if (tail) {
+          const chunk = JSON.parse(tail) as OllamaChatChunk;
+          if (chunk.error) {
+            throw new Error(chunk.error);
+          }
+          const text = chunk.message?.content ?? "";
+          if (text) {
+            yield { type: "response.delta", text };
+          }
+        }
+      } finally {
+        reader.releaseLock();
+      }
+
       yield { type: "response.completed" };
     } catch (error) {
       yield {
         type: "response.error",
         error: error instanceof Error ? error : new Error(String(error)),
       };
+    }
+  }
+
+  async *streamWithTools(input: GenerationRequest & { tools: ToolDef[] }): AsyncIterable<ToolStreamEvent> {
+    const response = await fetch(`${this.baseUrl}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: input.model,
+        messages: this.toMessages(input),
+        tools: input.tools,
+        stream: true,
+      }),
+    });
+
+    if (!response.ok || !response.body) {
+      const detail = await this.readErrorDetail(response);
+      throw new Error(`ollama tool stream failed: ${response.status}${detail}`);
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    const toolCalls = new Map<number, OllamaToolAccumulator>();
+    const thinkParser = new ReasoningStreamParser();
+    let buffer = "";
+    let content = "";
+    let reasoning = "";
+    let hasNativeReasoning = false;
+    let completed = false;
+
+    function* emitFragments(frags: ReturnType<ReasoningStreamParser["write"]>) {
+      for (const frag of frags) {
+        if (frag.type === "thinking") {
+          reasoning += frag.text;
+          yield { type: "thinking" as const, text: frag.text };
+        } else {
+          content += frag.text;
+          yield { type: "token" as const, text: frag.text };
+        }
+      }
+    }
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+
+          const chunk = JSON.parse(trimmed) as OllamaChatChunk;
+          if (chunk.error) {
+            throw new Error(chunk.error);
+          }
+
+          const nativeThinking = chunk.message?.thinking ?? chunk.message?.reasoning_content ?? "";
+          if (nativeThinking) {
+            hasNativeReasoning = true;
+            reasoning += nativeThinking;
+            yield { type: "thinking", text: nativeThinking };
+          }
+
+          const text = chunk.message?.content ?? "";
+          if (text) {
+            if (hasNativeReasoning) {
+              content += text;
+              yield { type: "token", text };
+            } else {
+              for (const frag of emitFragments(thinkParser.write(text))) {
+                yield frag;
+              }
+            }
+          }
+
+          this.accumulateOllamaToolCalls(toolCalls, chunk.message?.tool_calls);
+
+          if (chunk.done) {
+            completed = true;
+            if (!hasNativeReasoning) {
+              for (const frag of thinkParser.flush()) {
+                if (frag.type === "thinking") reasoning += frag.text;
+                else content += frag.text;
+                yield frag;
+              }
+            }
+            yield { type: "done", response: this.buildModelResponse(content, reasoning, toolCalls) };
+            return;
+          }
+        }
+      }
+
+      const tail = buffer.trim();
+      if (tail) {
+        const chunk = JSON.parse(tail) as OllamaChatChunk;
+        if (chunk.error) {
+          throw new Error(chunk.error);
+        }
+
+        const nativeThinking = chunk.message?.thinking ?? chunk.message?.reasoning_content ?? "";
+        if (nativeThinking) {
+          hasNativeReasoning = true;
+          reasoning += nativeThinking;
+          yield { type: "thinking", text: nativeThinking };
+        }
+
+        const text = chunk.message?.content ?? "";
+        if (text) {
+          if (hasNativeReasoning) {
+            content += text;
+            yield { type: "token", text };
+          } else {
+            for (const frag of emitFragments(thinkParser.write(text))) {
+              yield frag;
+            }
+          }
+        }
+
+        this.accumulateOllamaToolCalls(toolCalls, chunk.message?.tool_calls);
+        if (chunk.done) {
+          completed = true;
+          if (!hasNativeReasoning) {
+            for (const frag of thinkParser.flush()) {
+              if (frag.type === "thinking") reasoning += frag.text;
+              else content += frag.text;
+              yield frag;
+            }
+          }
+          yield { type: "done", response: this.buildModelResponse(content, reasoning, toolCalls) };
+          return;
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+
+    if (!completed) {
+      if (!hasNativeReasoning) {
+        for (const frag of thinkParser.flush()) {
+          if (frag.type === "thinking") reasoning += frag.text;
+          else content += frag.text;
+          yield frag;
+        }
+      }
+      yield { type: "done", response: this.buildModelResponse(content, reasoning, toolCalls) };
     }
   }
 
@@ -77,8 +321,23 @@ export class OllamaProvider implements LLMProvider {
   private toMessages(input: GenerationRequest): ChatMessage[] {
     const base = input.messages.map((m) => {
       const msg: ChatMessage = { role: m.role, content: m.content };
-      if (m.reasoning_content) {
+      // Strip reasoning_content from assistant messages before sending to the API.
+      // DeepSeek returns 400 when reasoning_content is included on non-tool-call
+      // assistant messages.  Preserve it only for assistant messages that carry
+      // tool_calls (required for correct context reconstruction).
+      if (
+        m.reasoning_content &&
+        m.role === "assistant" &&
+        m.tool_calls &&
+        m.tool_calls.length > 0
+      ) {
         msg.reasoning_content = m.reasoning_content;
+      }
+      if (m.tool_call_id) {
+        msg.tool_call_id = m.tool_call_id;
+      }
+      if (m.tool_calls) {
+        msg.tool_calls = m.tool_calls;
       }
       return msg;
     });
@@ -88,22 +347,62 @@ export class OllamaProvider implements LLMProvider {
     return [{ role: "system", content: input.systemPrompt }, ...base];
   }
 
-  private contentToString(content: unknown): string {
-    if (typeof content === "string") {
-      return content;
+  private accumulateOllamaToolCalls(
+    calls: Map<number, OllamaToolAccumulator>,
+    deltas: OllamaToolCall[] | undefined,
+  ): void {
+    for (const [index, delta] of (deltas ?? []).entries()) {
+      const current =
+        calls.get(index) ??
+        {
+          id: delta.id ?? `ollama-tool-${index}`,
+          type: "function" as const,
+          name: "",
+          arguments: "",
+        };
+
+      if (delta.id) current.id = delta.id;
+      if (delta.function?.name) current.name = delta.function.name;
+      if (delta.function?.arguments !== undefined) {
+        current.arguments =
+          typeof delta.function.arguments === "string"
+            ? delta.function.arguments
+            : JSON.stringify(delta.function.arguments);
+      }
+      calls.set(index, current);
     }
-    if (Array.isArray(content)) {
-      return content
-        .map((part) => {
-          if (typeof part === "string") return part;
-          if (part && typeof part === "object" && "text" in part) {
-            const text = (part as { text?: unknown }).text;
-            return typeof text === "string" ? text : "";
-          }
-          return "";
-        })
-        .join("");
+  }
+
+  private buildModelResponse(
+    content: string,
+    reasoning: string,
+    calls: Map<number, OllamaToolAccumulator>,
+  ): ModelResponse {
+    const tool_calls: ToolCall[] = [...calls.entries()]
+      .sort(([a], [b]) => a - b)
+      .filter(([, call]) => call.name)
+      .map(([, call]) => ({
+        id: call.id,
+        type: call.type,
+        function: {
+          name: call.name,
+          arguments: call.arguments,
+        },
+      }));
+
+    return {
+      content,
+      ...(reasoning ? { reasoning_content: reasoning } : {}),
+      ...(tool_calls.length > 0 ? { tool_calls } : {}),
+    };
+  }
+
+  private async readErrorDetail(response: Response): Promise<string> {
+    try {
+      const text = await response.text();
+      return text ? `: ${text}` : "";
+    } catch {
+      return "";
     }
-    return "";
   }
 }

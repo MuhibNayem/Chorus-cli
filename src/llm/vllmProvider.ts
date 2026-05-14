@@ -1,12 +1,16 @@
-import { initChatModel } from "langchain";
 import { getProviderSettings } from "../settings/storage.js";
 import type { ProviderName } from "./config.js";
+import { ReasoningStreamParser } from "./reasoningParser.js";
 import type {
   GenerationRequest,
   GenerationResult,
   LLMProvider,
+  ModelResponse,
   ProviderHealth,
   StreamEvent,
+  ToolCall,
+  ToolDef,
+  ToolStreamEvent,
 } from "./provider.js";
 
 type VllmProviderOptions = {
@@ -17,11 +21,45 @@ type VllmProviderOptions = {
 
 type OpenAIChatCompletionResponse = {
   choices?: Array<{
-    message?: { content?: string | null; reasoning_content?: string };
-    delta?: { content?: string | null; reasoning_content?: string };
+    message?: {
+      content?: string | null;
+      reasoning_content?: string;
+      tool_calls?: OpenAIToolCall[];
+    };
+    delta?: {
+      content?: string | null;
+      reasoning_content?: string;
+      tool_calls?: OpenAIToolCallDelta[];
+    };
     finish_reason?: string | null;
   }>;
   error?: { message?: string };
+};
+
+type OpenAIToolCall = {
+  id?: string;
+  type?: string;
+  function?: {
+    name?: string;
+    arguments?: string;
+  };
+};
+
+type OpenAIToolCallDelta = {
+  index?: number;
+  id?: string;
+  type?: string;
+  function?: {
+    name?: string;
+    arguments?: string;
+  };
+};
+
+type ToolCallAccumulator = {
+  id: string;
+  type: "function";
+  name: string;
+  arguments: string;
 };
 
 /**
@@ -188,24 +226,6 @@ export class VllmProvider implements LLMProvider {
       (name === "vllm" ? "http://127.0.0.1:8000/v1" : "");
   }
 
-  async createChatModel(model: string) {
-    const isDeepSeek = this.name === "deepseek" || model.toLowerCase().includes("deepseek");
-
-    const config: Record<string, unknown> = {
-      baseURL: this.baseUrl,
-    };
-
-    if (isDeepSeek) {
-      config.fetch = createDeepSeekCompatibleFetch(globalThis.fetch);
-    }
-
-    return initChatModel(model, {
-      modelProvider: "openai",
-      apiKey: this.apiKey,
-      configuration: config,
-    });
-  }
-
   async generate(input: GenerationRequest): Promise<GenerationResult> {
     const response = await fetch(`${this.baseUrl}/chat/completions`, {
       method: "POST",
@@ -285,6 +305,161 @@ export class VllmProvider implements LLMProvider {
     yield { type: "response.completed" };
   }
 
+  async *streamWithTools(input: GenerationRequest & { tools: ToolDef[] }): AsyncIterable<ToolStreamEvent> {
+    const response = await fetch(`${this.baseUrl}/chat/completions`, {
+      method: "POST",
+      headers: this.buildHeaders(),
+      body: JSON.stringify({
+        model: input.model,
+        messages: this.toMessages(input),
+        tools: input.tools,
+        stream: true,
+      }),
+    });
+
+    if (!response.ok || !response.body) {
+      const detail = await this.readErrorDetail(response);
+      throw new Error(`${this.name} tool stream failed: ${response.status}${detail}`);
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    const toolCalls = new Map<number, ToolCallAccumulator>();
+    const thinkParser = new ReasoningStreamParser();
+    let buffer = "";
+    let content = "";
+    let reasoning = "";
+    let hasNativeReasoning = false;
+    let completed = false;
+
+    function* emitFragments(frags: ReturnType<ReasoningStreamParser["write"]>) {
+      for (const frag of frags) {
+        if (frag.type === "thinking") {
+          reasoning += frag.text;
+          yield { type: "thinking" as const, text: frag.text };
+        } else {
+          content += frag.text;
+          yield { type: "token" as const, text: frag.text };
+        }
+      }
+    }
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+
+        for (const line of lines) {
+          const event = this.parseSseLine(line);
+          if (event === null) continue;
+          if (event === "[DONE]") {
+            completed = true;
+            if (!hasNativeReasoning) {
+              for (const frag of thinkParser.flush()) {
+                if (frag.type === "thinking") reasoning += frag.text;
+                else content += frag.text;
+                yield frag;
+              }
+            }
+            yield { type: "done", response: this.buildModelResponse(content, reasoning, toolCalls) };
+            return;
+          }
+
+          const parsed = JSON.parse(event) as OpenAIChatCompletionResponse;
+          if (parsed.error?.message) {
+            throw new Error(parsed.error.message);
+          }
+
+          for (const choice of parsed.choices ?? []) {
+            const delta = choice.delta;
+            if (!delta) continue;
+
+            if (delta.reasoning_content) {
+              hasNativeReasoning = true;
+              reasoning += delta.reasoning_content;
+              yield { type: "thinking", text: delta.reasoning_content };
+            }
+
+            const text = delta.content ?? "";
+            if (text) {
+              if (hasNativeReasoning) {
+                content += text;
+                yield { type: "token", text };
+              } else {
+                for (const frag of emitFragments(thinkParser.write(text))) {
+                  yield frag;
+                }
+              }
+            }
+
+            this.accumulateOpenAIToolCalls(toolCalls, delta.tool_calls);
+          }
+        }
+      }
+
+      const tail = this.parseSseLine(buffer);
+      if (tail === "[DONE]") {
+        completed = true;
+        if (!hasNativeReasoning) {
+          for (const frag of thinkParser.flush()) {
+            if (frag.type === "thinking") reasoning += frag.text;
+            else content += frag.text;
+            yield frag;
+          }
+        }
+        yield { type: "done", response: this.buildModelResponse(content, reasoning, toolCalls) };
+        return;
+      }
+      if (tail !== null) {
+        const parsed = JSON.parse(tail) as OpenAIChatCompletionResponse;
+        if (parsed.error?.message) {
+          throw new Error(parsed.error.message);
+        }
+        for (const choice of parsed.choices ?? []) {
+          const delta = choice.delta;
+          if (!delta) continue;
+
+          if (delta.reasoning_content) {
+            hasNativeReasoning = true;
+            reasoning += delta.reasoning_content;
+            yield { type: "thinking", text: delta.reasoning_content };
+          }
+
+          const text = delta.content ?? "";
+          if (text) {
+            if (hasNativeReasoning) {
+              content += text;
+              yield { type: "token", text };
+            } else {
+              for (const frag of emitFragments(thinkParser.write(text))) {
+                yield frag;
+              }
+            }
+          }
+
+          this.accumulateOpenAIToolCalls(toolCalls, delta.tool_calls);
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+
+    if (!completed) {
+      if (!hasNativeReasoning) {
+        for (const frag of thinkParser.flush()) {
+          if (frag.type === "thinking") reasoning += frag.text;
+          else content += frag.text;
+          yield frag;
+        }
+      }
+      yield { type: "done", response: this.buildModelResponse(content, reasoning, toolCalls) };
+    }
+  }
+
   async health(): Promise<ProviderHealth> {
     try {
       const response = await fetch(`${this.baseUrl}/models`, {
@@ -314,8 +489,23 @@ export class VllmProvider implements LLMProvider {
   private toMessages(input: GenerationRequest) {
     const messages = input.messages.map((m) => {
       const msg: Record<string, unknown> = { role: m.role, content: m.content };
-      if (m.reasoning_content) {
+      // Strip reasoning_content from assistant messages before sending to the API.
+      // DeepSeek returns 400 when reasoning_content is included on non-tool-call
+      // assistant messages.  Preserve it only for assistant messages that carry
+      // tool_calls (required for correct context reconstruction).
+      if (
+        m.reasoning_content &&
+        m.role === "assistant" &&
+        m.tool_calls &&
+        m.tool_calls.length > 0
+      ) {
         msg.reasoning_content = m.reasoning_content;
+      }
+      if (m.tool_call_id) {
+        msg.tool_call_id = m.tool_call_id;
+      }
+      if (m.tool_calls) {
+        msg.tool_calls = m.tool_calls;
       }
       return msg;
     });
@@ -323,5 +513,68 @@ export class VllmProvider implements LLMProvider {
       return [{ role: "system", content: input.systemPrompt }, ...messages];
     }
     return messages;
+  }
+
+  private parseSseLine(line: string): string | null {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith(":") || !trimmed.startsWith("data:")) {
+      return null;
+    }
+    return trimmed.slice(5).trim();
+  }
+
+  private accumulateOpenAIToolCalls(
+    calls: Map<number, ToolCallAccumulator>,
+    deltas: OpenAIToolCallDelta[] | undefined,
+  ): void {
+    for (const delta of deltas ?? []) {
+      const index = delta.index ?? calls.size;
+      const current =
+        calls.get(index) ??
+        {
+          id: delta.id ?? `tool-${index}`,
+          type: "function" as const,
+          name: "",
+          arguments: "",
+        };
+
+      if (delta.id) current.id = delta.id;
+      if (delta.function?.name) current.name += delta.function.name;
+      if (delta.function?.arguments) current.arguments += delta.function.arguments;
+      calls.set(index, current);
+    }
+  }
+
+  private buildModelResponse(
+    content: string,
+    reasoning: string,
+    calls: Map<number, ToolCallAccumulator>,
+  ): ModelResponse {
+    const tool_calls: ToolCall[] = [...calls.entries()]
+      .sort(([a], [b]) => a - b)
+      .filter(([, call]) => call.name)
+      .map(([, call]) => ({
+        id: call.id,
+        type: call.type,
+        function: {
+          name: call.name,
+          arguments: call.arguments,
+        },
+      }));
+
+    return {
+      content,
+      ...(reasoning ? { reasoning_content: reasoning } : {}),
+      ...(tool_calls.length > 0 ? { tool_calls } : {}),
+    };
+  }
+
+  private async readErrorDetail(response: Response): Promise<string> {
+    try {
+      const text = await response.text();
+      return text ? `: ${text}` : "";
+    } catch {
+      return "";
+    }
   }
 }

@@ -1,10 +1,16 @@
-export interface Message {
+import type { ChatMessage, ToolCall } from "../../../llm/provider.js";
+
+export interface Message extends Omit<ChatMessage, "role"> {
   role: string;
-  content: string;
-  reasoning_content?: string;
+  tool_calls?: ToolCall[];
 }
 
-/** Minimal agent interface — shields useAgentStream from deepagents type complexity */
+export interface ActiveAgentRun {
+  iterator: AsyncIterator<unknown>;
+  resumeKey?: string;
+}
+
+/** Minimal agent interface used by the still-DeepAgents subagent path. */
 export interface AgentLike {
   stream(state: unknown, config: unknown): Promise<AsyncIterable<unknown>>;
 }

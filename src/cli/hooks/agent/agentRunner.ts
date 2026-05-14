@@ -1,7 +1,3 @@
-import { createDeepAgent, FilesystemBackend } from "deepagents";
-import { Command, MemorySaver } from "@langchain/langgraph";
-import { AIMessage, HumanMessage, SystemMessage } from "@langchain/core/messages";
-import type { BaseMessage } from "@langchain/core/messages";
 import {
   createHarnessRunRecord,
   type ApprovalPolicy,
@@ -13,39 +9,31 @@ import {
   verifyTaskCompletion,
 } from "../../../harness/index.js";
 import { allTools } from "../../../tools/index.js";
+import { filesystemTools } from "../../../tools/filesystem.js";
 import { createDelegateTool } from "../../../subagents/delegateTool.js";
 import { executeWorkers, formatWorkerResults } from "../../../harness/workerEngine.js";
 import { SYSTEM_PROMPT } from "../../../prompts/system.js";
 import { countMessagesTokens } from "../../../context/tokenizer.js";
-import { createProvider, getDefaultProvider, getProviderModel } from "../../../llm/index.js";
+import { createProvider, getDefaultProvider, getProviderModel, type ChatMessage, type LLMProvider } from "../../../llm/index.js";
 import { getModeModelConfig } from "../../../settings/storage.js";
 import { sessionManager } from "../../../session/manager.js";
+import { BtwQueue } from "../../../agent/btw.js";
+import { JsonFileCheckpointer } from "../../../agent/checkpointer.js";
+import { HitlGate } from "../../../agent/hitl.js";
+import { runAgentLoop } from "../../../agent/loop.js";
+import { createDefaultMiddleware } from "../../../agent/middleware.js";
+import type { AgentTool, HitlDecision } from "../../../agent/types.js";
 import { processAgentStream } from "../../agent/streamProcessor.js";
 import type { HitlInterrupt } from "../../agent/streamProcessor.js";
 import { rememberCompletedTask } from "../../../harness/projectMemory.js";
 import { filterToolsForPolicy } from "./toolPolicy.js";
-import { normalizeDeepAgentToolArgsMiddleware } from "./deepAgentToolMiddleware.js";
 import type { Dispatch } from "react";
 import type { FeedAction } from "../../state/feedReducer.js";
-import type { Message, AgentLike } from "./types.js";
+import type { ActiveAgentRun, Message } from "./types.js";
 
-type HitlDecision =
-  | { type: "approve" }
-  | { type: "reject"; message?: string };
-type DeepAgentOptions = NonNullable<Parameters<typeof createDeepAgent>[0]>;
-
-const hitlCheckpointer = new MemorySaver();
-const workspaceBackend = new FilesystemBackend({
-  rootDir: process.cwd(),
-  virtualMode: true,
-});
-const HITL_TOOL_DESCRIPTIONS: Record<string, string> = {
-  write_file: "Review this file write before it changes the workspace.",
-  edit_file: "Review this targeted file edit before it changes the workspace.",
-  run_command: "Review this shell command before it runs.",
-  git_commit: "Review this git commit before it records changes.",
-  delegate_to_subagent: "Review this delegation before another agent starts work.",
-};
+const hitlGate = new HitlGate();
+const checkpointer = new JsonFileCheckpointer();
+const btwQueue = new BtwQueue();
 
 function dbg(label: string, data?: unknown): void {
   if (process.env.DEBUG !== "1") return;
@@ -60,26 +48,6 @@ function dbg(label: string, data?: unknown): void {
   }
 }
 
-/**
- * Convert internal Messages to LangChain BaseMessage instances.
- * Preserves reasoning_content in additional_kwargs so that LangGraph
- * checkpoints maintain it across tool-call rounds (required by DeepSeek).
- */
-function toAgentMessages(msgs: Message[]): BaseMessage[] {
-  return msgs.map((m) => {
-    if (m.role === "assistant") {
-      const msg = new AIMessage({ content: m.content });
-      if (m.reasoning_content) {
-        msg.additional_kwargs.reasoning_content = m.reasoning_content;
-      }
-      return msg;
-    }
-    if (m.role === "user") return new HumanMessage(m.content);
-    if (m.role === "system") return new SystemMessage(m.content);
-    return new HumanMessage(m.content);
-  });
-}
-
 export interface HarnessResult {
   prepared: ReturnType<typeof prepareTaskExecution>;
   harnessRun: ReturnType<typeof createHarnessRunRecord>;
@@ -87,24 +55,25 @@ export interface HarnessResult {
 
 export interface AgentRunOptions {
   messages: Message[];
-  model: Awaited<ReturnType<ReturnType<typeof createProvider>["createChatModel"]>>;
+  provider: LLMProvider;
+  modelName: string;
   runtimePrompt: string;
   dispatch: Dispatch<FeedAction>;
   parentTurnId: string;
   mode?: ExecutionMode;
   approvalPolicy?: ApprovalPolicy;
-  sessionApprovedTools?: Set<string>;
 }
 
 export interface ResumeAgentRunOptions extends AgentRunOptions {
-  decisions: HitlDecision[];
+  activeRun: ActiveAgentRun;
 }
 
 export interface PendingAgentRun {
   messages: Message[];
   prepared: ReturnType<typeof prepareTaskExecution>;
   harnessRun: ReturnType<typeof createHarnessRunRecord>;
-  model: Awaited<ReturnType<ReturnType<typeof createProvider>["createChatModel"]>>;
+  provider: LLMProvider;
+  modelName: string;
   runtimePrompt: string;
   parentTurnId: string;
   mode: ExecutionMode;
@@ -112,73 +81,27 @@ export interface PendingAgentRun {
   turnStartedAt: number;
 }
 
-function buildInterruptOn(
-  tools: Array<{ name?: string }>,
-  mode: ExecutionMode,
-  approvalPolicy: ApprovalPolicy,
-  sessionApprovedTools: Set<string> = new Set()
-): DeepAgentOptions["interruptOn"] {
-  if (mode !== "build") return undefined;
-  if (approvalPolicy === "suggest") return undefined;
-
-  const interruptOn: NonNullable<DeepAgentOptions["interruptOn"]> = {};
-  for (const tool of tools) {
-    const name = tool.name;
-    if (!name || sessionApprovedTools.has(name)) continue;
-    if (!(name in HITL_TOOL_DESCRIPTIONS)) continue;
-    interruptOn[name] = {
-      allowedDecisions: ["approve", "reject"],
-      description: HITL_TOOL_DESCRIPTIONS[name],
-    };
-  }
-
-  return Object.keys(interruptOn).length > 0 ? interruptOn : undefined;
+export interface AgentStreamResult {
+  responseText: string;
+  reasoningContent: string;
+  toolCallsObserved: number;
+  hadError: boolean;
+  history: ChatMessage[];
+  interrupt?: HitlInterrupt;
+  activeRun?: ActiveAgentRun;
 }
 
-function createConfiguredAgent({
-  model,
-  runtimePrompt,
+function createRuntimeTools({
+  provider,
+  modelName,
   dispatch,
   parentTurnId,
   mode = "build",
   approvalPolicy = "auto_edit",
-  sessionApprovedTools,
-}: Omit<AgentRunOptions, "messages">): AgentLike {
-  const delegateTool = createDelegateTool({ model, dispatch, parentTurnId });
-  const buildTools = approvalPolicy === "full_auto" ? [...allTools, delegateTool] : allTools;
-  const tools = filterToolsForPolicy(buildTools, mode, approvalPolicy);
-  const interruptOn = buildInterruptOn(tools, mode, approvalPolicy, sessionApprovedTools);
-
-  const agentOptions: DeepAgentOptions = {
-    model,
-    tools,
-    systemPrompt: runtimePrompt,
-    backend: workspaceBackend,
-    middleware: [normalizeDeepAgentToolArgsMiddleware],
-  };
-  if (interruptOn) {
-    agentOptions.interruptOn = interruptOn;
-    agentOptions.checkpointer = hitlCheckpointer;
-  }
-  if (mode === "plan" || approvalPolicy === "suggest") {
-    agentOptions.permissions = [
-      { operations: ["write"], paths: ["/**"], mode: "deny" },
-    ];
-  }
-  if (process.env.DISABLE_TODO_MIDDLEWARE === "1") {
-    agentOptions.middleware = [normalizeDeepAgentToolArgsMiddleware];
-  }
-
-  return createDeepAgent(agentOptions) as AgentLike;
-}
-
-function agentStreamConfig() {
-  const limit = parseInt(process.env.LANGGRAPH_RECURSION_LIMIT ?? "", 10);
-  return {
-    streamMode: ["messages", "updates"] as const,
-    configurable: { thread_id: sessionManager.getCurrent()?.id },
-    recursionLimit: Number.isFinite(limit) && limit > 0 ? limit : 2000,
-  };
+}: Pick<AgentRunOptions, "provider" | "modelName" | "dispatch" | "parentTurnId" | "mode" | "approvalPolicy">): AgentTool[] {
+  const delegateTool = createDelegateTool({ provider, modelName, dispatch, parentTurnId });
+  const buildTools = [...filesystemTools, ...allTools, ...(approvalPolicy === "full_auto" ? [delegateTool] : [])];
+  return filterToolsForPolicy(buildTools, mode, approvalPolicy) as AgentTool[];
 }
 
 export async function prepareHarness(
@@ -188,7 +111,12 @@ export async function prepareHarness(
   modelName?: string,
   systemPromptOverride?: string,
   mode: ExecutionMode = "build"
-): Promise<{ prepared: ReturnType<typeof prepareTaskExecution>; harnessRun: ReturnType<typeof createHarnessRunRecord>; model: Awaited<ReturnType<ReturnType<typeof createProvider>["createChatModel"]>>; provider: ReturnType<typeof createProvider> }> {
+): Promise<{
+  prepared: ReturnType<typeof prepareTaskExecution>;
+  harnessRun: ReturnType<typeof createHarnessRunRecord>;
+  provider: LLMProvider;
+  modelName: string;
+}> {
   const prepared = prepareTaskExecution({
     text,
     expandedText: text,
@@ -227,23 +155,24 @@ export async function prepareHarness(
     model: resolvedModel,
   });
 
-  const model = await provider.createChatModel(resolvedModel);
-  return { prepared, harnessRun, model, provider };
+  return { prepared, harnessRun, provider, modelName: resolvedModel };
 }
 
 export async function runAgentStream(
   messagesOrOptions: Message[] | AgentRunOptions,
-  model?: Awaited<ReturnType<ReturnType<typeof createProvider>["createChatModel"]>>,
+  provider?: LLMProvider,
+  modelName?: string,
   runtimePrompt?: string,
   dispatch?: Dispatch<FeedAction>,
   parentTurnId?: string,
   mode: ExecutionMode = "build",
   approvalPolicy: ApprovalPolicy = "auto_edit"
-) {
+): Promise<AgentStreamResult> {
   const options: AgentRunOptions = Array.isArray(messagesOrOptions)
     ? {
         messages: messagesOrOptions,
-        model: model!,
+        provider: provider!,
+        modelName: modelName!,
         runtimePrompt: runtimePrompt!,
         dispatch: dispatch!,
         parentTurnId: parentTurnId!,
@@ -252,35 +181,65 @@ export async function runAgentStream(
       }
     : messagesOrOptions;
 
-  const agent = createConfiguredAgent(options);
+  const tools = createRuntimeTools(options);
+  const threadId = sessionManager.getCurrent()?.id ?? crypto.randomUUID();
+  const stream = runAgentLoop({
+    provider: options.provider,
+    model: options.modelName,
+    tools,
+    messages: options.messages as ChatMessage[],
+    systemPrompt: options.runtimePrompt,
+    threadId,
+    hitlGate,
+    btwQueue,
+    policy: options.approvalPolicy ?? "auto_edit",
+    checkpointer,
+    middleware: createDefaultMiddleware(threadId),
+  });
+  const iterator = stream[Symbol.asyncIterator]();
+  dbg("STREAM_OPENED", { msgCount: options.messages.length, toolCount: tools.length });
 
-  const agentInput = { messages: toAgentMessages(options.messages) };
-  const agentConfig = agentStreamConfig();
-
-  const stream = await agent.stream(agentInput, agentConfig);
-  dbg("STREAM_OPENED", { msgCount: options.messages.length });
-
-  return processAgentStream(stream, options.dispatch, dbg);
+  const streamResult = await processAgentStream(iterator, options.dispatch, dbg);
+  return {
+    ...streamResult,
+    activeRun: streamResult.interrupt ? { iterator, resumeKey: streamResult.interrupt.resumeKey } : undefined,
+  };
 }
 
 export async function resumeAgentStream(options: ResumeAgentRunOptions) {
-  const agent = createConfiguredAgent(options);
-  const resumeCommand = new Command({ resume: { decisions: options.decisions } });
-  const stream = await agent.stream(resumeCommand, agentStreamConfig());
-  dbg("STREAM_RESUMED", { decisions: options.decisions.map((decision) => decision.type) });
-
-  return processAgentStream(stream, options.dispatch, dbg);
+  dbg("STREAM_RESUMED", { resumeKey: options.activeRun.resumeKey });
+  const streamResult = await processAgentStream(
+    options.activeRun.iterator as AsyncIterator<import("../../../agent/types.js").AgentEvent>,
+    options.dispatch,
+    dbg,
+  );
+  return { ...streamResult, activeRun: undefined };
 }
 
 export function decisionsForInterrupt(
   interrupt: HitlInterrupt,
   decision: "approve" | "deny"
-): HitlDecision[] {
-  return interrupt.actionRequests.map(() =>
-    decision === "approve"
-      ? { type: "approve" }
-      : { type: "reject", message: "Denied by user." }
-  );
+): HitlDecision {
+  return decision === "approve"
+    ? { type: "approve" }
+    : { type: "reject", message: "Denied by user." };
+}
+
+export function resolveHitlDecision(
+  resumeKey: string,
+  decision: HitlDecision,
+): void {
+  hitlGate.resolve(resumeKey, decision);
+}
+
+export function enqueueBtw(text: string): boolean {
+  btwQueue.enqueue(text);
+  return true;
+}
+
+export function resetAgentRuntime(): void {
+  btwQueue.clear();
+  hitlGate.resetSessionApprovals();
 }
 
 export function finalizeTurn(
@@ -292,18 +251,19 @@ export function finalizeTurn(
   dispatch: Dispatch<FeedAction>,
   onTokensUpdate: (tokens: number) => void
 ): Message[] {
-  const responseText = streamResult.responseText;
-  if (responseText) {
-    const msg: Message = { role: "assistant", content: responseText };
-    if (streamResult.reasoningContent) {
-      msg.reasoning_content = streamResult.reasoningContent;
-    }
-    messages.push(msg);
+  if (streamResult.history.length > 0) {
+    messages.splice(0, messages.length, ...(streamResult.history as Message[]));
+  } else if (streamResult.responseText && messages[messages.length - 1]?.content !== streamResult.responseText) {
+    messages.push({
+      role: "assistant",
+      content: streamResult.responseText,
+      ...(streamResult.reasoningContent ? { reasoning_content: streamResult.reasoningContent } : {}),
+    });
   }
 
   const completion = verifyTaskCompletion({
     task: prepared.task,
-    responseText,
+    responseText: streamResult.responseText,
     toolCallsObserved: streamResult.toolCallsObserved,
     hadError: streamResult.hadError,
     durationMs: Date.now() - turnStartedAt,
@@ -317,7 +277,7 @@ export function finalizeTurn(
     harnessRun.projectMemory = rememberCompletedTask({
       taskId: completion.task.taskId,
       kind: prepared.route.kind,
-      summary: responseText || "(no response text)",
+      summary: streamResult.responseText || "(no response text)",
     });
     saveHarnessRun(harnessRun);
   }

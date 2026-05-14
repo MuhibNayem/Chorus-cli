@@ -4,6 +4,7 @@ import { sessionManager } from "../session/manager.js";
 import { loadSettings, getModeModelConfig } from "../settings/storage.js";
 import type { ApprovalPolicy, ExecutionMode } from "../harness/types.js";
 import { describeApprovalPolicy } from "./hooks/agent/toolPolicy.js";
+import { SWARM_PRESETS } from "../swarm/presets/index.js";
 
 export interface CommandContext {
   dispatch: Dispatch<FeedAction>;
@@ -26,6 +27,10 @@ export interface CommandContext {
   getApprovalPolicy?: () => ApprovalPolicy;
   setApprovalPolicy?: (policy: ApprovalPolicy) => void;
   setAdvisorEnabled?: (enabled: boolean) => void;
+  submitBtw?: (text: string) => boolean;
+  runSwarmPreset?: (presetName: string, task: string) => void;
+  stopSwarm?: () => void;
+  listSwarmTraces?: () => void;
 }
 
 export interface SlashCommand {
@@ -53,9 +58,13 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: "/resume",        description: "Resume a past session (interactive)" },
   { name: "/build-model",   description: "Set model for Build mode (interactive)" },
   { name: "/plan-model",    description: "Set model for Plan mode (interactive)" },
+  { name: "/btw",           description: "Inject a note into the active agent loop between tool rounds" },
   { name: "/advisor",       description: "Toggle advisor: on | off | status" },
   { name: "/config",        description: "Configure API keys (Serper, Google CSE, Weather)" },
   { name: "/session-new",   description: "Start a fresh session" },
+  { name: "/swarm",         description: "Run a multi-agent swarm preset: /swarm <preset> [task]" },
+  { name: "/swarm-stop",    description: "Stop the currently running swarm" },
+  { name: "/swarm-traces",  description: "List swarm trace files from ~/.chorus/swarm-traces/" },
   { name: "/exit",          description: "Exit the CLI" },
 ];
 
@@ -214,6 +223,23 @@ export function handleSlashCommand(
       ctx.showModeModelSelect?.("plan");
       return true;
 
+    case "/btw": {
+      const text = input.trim().slice(4).trim();
+      if (!text) {
+        ctx.dispatch({ type: "APPEND_SYSTEM", id, text: "Usage: /btw <note for the active agent>" });
+        return true;
+      }
+      const queued = ctx.submitBtw?.(text) ?? false;
+      ctx.dispatch({
+        type: "APPEND_SYSTEM",
+        id,
+        text: queued
+          ? `Queued mid-task note: ${text}`
+          : "No active agent loop is running. /btw only works while the agent is in progress.",
+      });
+      return true;
+    }
+
     case "/advisor": {
       const arg = argRaw?.toLowerCase();
       if (arg === "on") {
@@ -237,6 +263,74 @@ export function handleSlashCommand(
     case "/config":
       ctx.showApiKeysConfig?.();
       return true;
+
+    case "/swarm": {
+      const parts = input.trim().slice(6).trim().split(/\s+/);
+      const presetName = parts[0];
+
+      if (!presetName || presetName === "list") {
+        const rows = SWARM_PRESETS.map(
+          (p) => `  ${p.name.padEnd(22)}  ${p.description}\n                            agents: ${p.agents.join(" → ")}`,
+        ).join("\n");
+        ctx.dispatch({
+          type: "APPEND_SYSTEM",
+          id,
+          text: `Available swarm presets:\n\n${rows}\n\nUsage: /swarm <preset> [task description]`,
+        });
+        return true;
+      }
+
+      const preset = SWARM_PRESETS.find((p) => p.name === presetName);
+      if (!preset) {
+        ctx.dispatch({
+          type: "APPEND_SYSTEM",
+          id,
+          text: `Unknown preset: "${presetName}". Run /swarm to list available presets.`,
+        });
+        return true;
+      }
+
+      const taskParts = parts.slice(1);
+      const task = taskParts.length > 0
+        ? taskParts.join(" ")
+        : `Run the ${preset.name} workflow on the current workspace.`;
+
+      if (!ctx.runSwarmPreset) {
+        ctx.dispatch({
+          type: "APPEND_SYSTEM",
+          id,
+          text: "Swarm execution is not available in this context.",
+        });
+        return true;
+      }
+
+      ctx.dispatch({
+        type: "APPEND_SYSTEM",
+        id,
+        text: `Starting swarm: ${preset.name}\nAgents: ${preset.agents.join(" → ")}\nTask: ${task}`,
+      });
+      ctx.runSwarmPreset(presetName, task);
+      return true;
+    }
+
+    case "/swarm-stop": {
+      if (!ctx.stopSwarm) {
+        ctx.dispatch({ type: "APPEND_SYSTEM", id, text: "No swarm is currently running." });
+        return true;
+      }
+      ctx.stopSwarm();
+      ctx.dispatch({ type: "APPEND_SYSTEM", id, text: "Swarm stop requested." });
+      return true;
+    }
+
+    case "/swarm-traces": {
+      if (ctx.listSwarmTraces) {
+        ctx.listSwarmTraces();
+      } else {
+        ctx.dispatch({ type: "APPEND_SYSTEM", id, text: "Swarm traces not available in this context." });
+      }
+      return true;
+    }
 
     case "/exit":
       ctx.exit();

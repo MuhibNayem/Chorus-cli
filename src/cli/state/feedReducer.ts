@@ -1,5 +1,29 @@
 // ── Types ────────────────────────────────────────────────────────────────────
 
+// ── Swarm Types ───────────────────────────────────────────────────────────────
+
+export type SwarmContextMode = "shared" | "isolated" | "filtered";
+
+export type SwarmAgentSection = {
+  sectionId: string;
+  agentName: string;
+  contextMode: SwarmContextMode;
+  status: "running" | "done" | "error";
+  text: string;
+  tools: ToolCard[];
+  startedAt: number;
+  completedAt?: number;
+  expanded: boolean;
+  errorReason?: string;
+};
+
+export type SwarmHandoffRecord = {
+  from: string;
+  to: string;
+  taskDescription: string;
+  reasoning?: string;
+};
+
 export type ToolCard = {
   id: string;
   name: string;
@@ -50,7 +74,23 @@ export type FeedEntry =
       startedAt: number;
     }
   | { kind: "error"; id: string; message: string }
-  | { kind: "system"; id: string; text: string };
+  | { kind: "system"; id: string; text: string }
+  | {
+      kind: "swarm-turn";
+      id: string;
+      swarmId: string;
+      presetName: string;
+      agentSections: SwarmAgentSection[];
+      handoffs: SwarmHandoffRecord[];
+      artifactKeys: string[];
+      status: "running" | "done" | "error";
+      handoffCount: number;
+      totalAgentRounds: number;
+      startedAt: number;
+      completedAt?: number;
+      circuitBreakReason?: string;
+      done: boolean;
+    };
 
 // ── Worker / Subagent Card Data ──────────────────────────────────────────────
 
@@ -113,7 +153,21 @@ export type FeedAction =
   // Session actions
   | { type: "ADD_SESSION_EVENT"; sessionId: string; event: TurnEvent }
   | { type: "FINALIZE_SESSION"; sessionId: string; completedAt: number }
-  | { type: "ADD_USAGE"; inputTokens: number; outputTokens: number; cost: number };
+  | { type: "ADD_USAGE"; inputTokens: number; outputTokens: number; cost: number }
+  // Swarm actions
+  | { type: "SWARM_START"; swarmId: string; presetName: string; agents: string[]; startedAt: number }
+  | { type: "SWARM_AGENT_START"; swarmId: string; agentName: string; contextMode: SwarmContextMode; startedAt: number }
+  | { type: "SWARM_AGENT_TOKEN"; swarmId: string; agentName: string; text: string }
+  | { type: "SWARM_TOOL_START"; swarmId: string; agentName: string; toolCall: Omit<ToolCard, "expanded"> }
+  | { type: "SWARM_TOOL_DONE"; swarmId: string; agentName: string; toolId: string; result: string; status: "done" | "error" }
+  | { type: "SWARM_AGENT_DONE"; swarmId: string; agentName: string; completedAt: number }
+  | { type: "SWARM_HANDOFF"; swarmId: string; from: string; to: string; taskDescription: string; reasoning?: string }
+  | { type: "SWARM_ARTIFACT"; swarmId: string; key: string }
+  | { type: "SWARM_VALIDATION_FAIL"; swarmId: string; agentName: string; reason: string }
+  | { type: "SWARM_CIRCUIT_BREAK"; swarmId: string; agent: string; reason: string }
+  | { type: "SWARM_DONE"; swarmId: string; handoffCount: number; totalAgentRounds: number; completedAt: number }
+  | { type: "SWARM_ERROR"; swarmId: string; message: string }
+  | { type: "SWARM_TOGGLE_AGENT"; swarmId: string; sectionId: string };
 
 export interface FeedState {
   entries: FeedEntry[];
@@ -134,6 +188,34 @@ export const initialFeedState: FeedState = {
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+type SwarmTurnEntry = Extract<FeedEntry, { kind: "swarm-turn" }>;
+
+function mapSwarmTurn(
+  entries: FeedEntry[],
+  swarmId: string,
+  fn: (turn: SwarmTurnEntry) => SwarmTurnEntry,
+): FeedEntry[] {
+  return entries.map((e) =>
+    e.kind === "swarm-turn" && e.swarmId === swarmId ? fn(e) : e,
+  );
+}
+
+function updateActiveAgentSection(
+  sections: SwarmAgentSection[],
+  agentName: string,
+  fn: (s: SwarmAgentSection) => SwarmAgentSection,
+): SwarmAgentSection[] {
+  let lastIdx = -1;
+  for (let i = sections.length - 1; i >= 0; i--) {
+    if (sections[i].agentName === agentName && sections[i].status === "running") {
+      lastIdx = i;
+      break;
+    }
+  }
+  if (lastIdx === -1) return sections;
+  return sections.map((s, i) => (i === lastIdx ? fn(s) : s));
+}
 
 function mapActiveTurn(
   entries: FeedEntry[],
@@ -321,10 +403,21 @@ export function feedReducer(state: FeedState, action: FeedAction): FeedState {
         if (msg.role === "user") {
           historyEntries.push({ kind: "user", id, text: msg.content });
         } else if (msg.role === "assistant") {
+          const events: TurnEvent[] = [];
+          // Preserve reasoning_content as a thinking block above the response.
+          if ((msg as { reasoning_content?: string }).reasoning_content) {
+            events.push({
+              kind: "thinking",
+              id: `turn-${id}-think-0`,
+              text: (msg as { reasoning_content?: string }).reasoning_content!,
+              expanded: false,
+            });
+          }
+          events.push({ kind: "response", text: msg.content });
           historyEntries.push({
             kind: "turn",
             id: `turn-${id}`,
-            events: [{ kind: "response", text: msg.content }],
+            events,
             done: true,
             startedAt: 0,
           });
@@ -468,6 +561,201 @@ export function feedReducer(state: FeedState, action: FeedAction): FeedState {
         totalInputTokens: state.totalInputTokens + action.inputTokens,
         totalOutputTokens: state.totalOutputTokens + action.outputTokens,
         totalCost: state.totalCost + action.cost,
+      };
+    }
+
+    // ── Swarm Actions ─────────────────────────────────────────────────────────
+
+    case "SWARM_START": {
+      const entry: FeedEntry = {
+        kind: "swarm-turn",
+        id: `swarm-${action.swarmId}`,
+        swarmId: action.swarmId,
+        presetName: action.presetName,
+        agentSections: [],
+        handoffs: [],
+        artifactKeys: [],
+        status: "running",
+        handoffCount: 0,
+        totalAgentRounds: 0,
+        startedAt: action.startedAt,
+        done: false,
+      };
+      return { ...state, entries: [...state.entries, entry] };
+    }
+
+    case "SWARM_AGENT_START": {
+      const section: SwarmAgentSection = {
+        sectionId: `${action.swarmId}-${action.agentName}-${action.startedAt}`,
+        agentName: action.agentName,
+        contextMode: action.contextMode,
+        status: "running",
+        text: "",
+        tools: [],
+        startedAt: action.startedAt,
+        expanded: true,
+      };
+      return {
+        ...state,
+        entries: mapSwarmTurn(state.entries, action.swarmId, (turn) => ({
+          ...turn,
+          agentSections: [...turn.agentSections, section],
+        })),
+      };
+    }
+
+    case "SWARM_AGENT_TOKEN": {
+      return {
+        ...state,
+        entries: mapSwarmTurn(state.entries, action.swarmId, (turn) => ({
+          ...turn,
+          agentSections: updateActiveAgentSection(
+            turn.agentSections,
+            action.agentName,
+            (s) => ({ ...s, text: s.text + action.text }),
+          ),
+        })),
+      };
+    }
+
+    case "SWARM_TOOL_START": {
+      const card: ToolCard = { ...action.toolCall, expanded: false };
+      return {
+        ...state,
+        entries: mapSwarmTurn(state.entries, action.swarmId, (turn) => ({
+          ...turn,
+          agentSections: updateActiveAgentSection(
+            turn.agentSections,
+            action.agentName,
+            (s) => ({ ...s, tools: [...s.tools, card] }),
+          ),
+        })),
+      };
+    }
+
+    case "SWARM_TOOL_DONE": {
+      return {
+        ...state,
+        entries: mapSwarmTurn(state.entries, action.swarmId, (turn) => ({
+          ...turn,
+          agentSections: updateActiveAgentSection(
+            turn.agentSections,
+            action.agentName,
+            (s) => ({
+              ...s,
+              tools: s.tools.map((t) =>
+                t.id === action.toolId
+                  ? { ...t, result: action.result, status: action.status }
+                  : t,
+              ),
+            }),
+          ),
+        })),
+      };
+    }
+
+    case "SWARM_AGENT_DONE": {
+      return {
+        ...state,
+        entries: mapSwarmTurn(state.entries, action.swarmId, (turn) => ({
+          ...turn,
+          agentSections: updateActiveAgentSection(
+            turn.agentSections,
+            action.agentName,
+            (s) => ({ ...s, status: "done", completedAt: action.completedAt, expanded: false }),
+          ),
+        })),
+      };
+    }
+
+    case "SWARM_HANDOFF": {
+      const record: SwarmHandoffRecord = {
+        from: action.from,
+        to: action.to,
+        taskDescription: action.taskDescription,
+        reasoning: action.reasoning,
+      };
+      return {
+        ...state,
+        entries: mapSwarmTurn(state.entries, action.swarmId, (turn) => ({
+          ...turn,
+          handoffCount: turn.handoffCount + 1,
+          handoffs: [...turn.handoffs, record],
+        })),
+      };
+    }
+
+    case "SWARM_ARTIFACT": {
+      return {
+        ...state,
+        entries: mapSwarmTurn(state.entries, action.swarmId, (turn) => ({
+          ...turn,
+          artifactKeys: turn.artifactKeys.includes(action.key)
+            ? turn.artifactKeys
+            : [...turn.artifactKeys, action.key],
+        })),
+      };
+    }
+
+    case "SWARM_VALIDATION_FAIL": {
+      return {
+        ...state,
+        entries: mapSwarmTurn(state.entries, action.swarmId, (turn) => ({
+          ...turn,
+          agentSections: updateActiveAgentSection(
+            turn.agentSections,
+            action.agentName,
+            (s) => ({ ...s, status: "error", errorReason: action.reason }),
+          ),
+        })),
+      };
+    }
+
+    case "SWARM_CIRCUIT_BREAK": {
+      return {
+        ...state,
+        entries: mapSwarmTurn(state.entries, action.swarmId, (turn) => ({
+          ...turn,
+          status: "error",
+          circuitBreakReason: action.reason,
+        })),
+      };
+    }
+
+    case "SWARM_DONE": {
+      return {
+        ...state,
+        entries: mapSwarmTurn(state.entries, action.swarmId, (turn) => ({
+          ...turn,
+          status: "done",
+          done: true,
+          handoffCount: action.handoffCount,
+          totalAgentRounds: action.totalAgentRounds,
+          completedAt: action.completedAt,
+        })),
+      };
+    }
+
+    case "SWARM_ERROR": {
+      return {
+        ...state,
+        entries: mapSwarmTurn(state.entries, action.swarmId, (turn) => ({
+          ...turn,
+          status: "error",
+          done: true,
+        })),
+      };
+    }
+
+    case "SWARM_TOGGLE_AGENT": {
+      return {
+        ...state,
+        entries: mapSwarmTurn(state.entries, action.swarmId, (turn) => ({
+          ...turn,
+          agentSections: turn.agentSections.map((s) =>
+            s.sectionId === action.sectionId ? { ...s, expanded: !s.expanded } : s,
+          ),
+        })),
       };
     }
 

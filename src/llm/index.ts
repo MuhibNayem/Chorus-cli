@@ -2,6 +2,7 @@ export * from "./config.js";
 export * from "./provider.js";
 export * from "./ollamaProvider.js";
 export * from "./vllmProvider.js";
+export * from "./reasoningParser.js";
 export * from "./registry.js";
 export * from "./contextWindows.js";
 export * from "../settings/storage.js";

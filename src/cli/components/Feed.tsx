@@ -2,20 +2,35 @@ import { Box, Static, Text } from "ink";
 import type { FeedEntry } from "../state/feedReducer.js";
 import { UserMessage } from "./UserMessage.js";
 import { AgentTurn } from "./AgentTurn.js";
+import { SwarmTurnCard } from "./SwarmTurnCard.js";
 
 interface FeedProps {
   entries: FeedEntry[];
   processing: boolean;
   onToggle: (id: string) => void;
+  onToggleSwarmAgent: (swarmId: string, sectionId: string) => void;
   focusedId?: string | null;
+  focusedSwarmSectionId?: string | null;
 }
 
-function renderStaticEntry(entry: FeedEntry, onToggle: (id: string) => void) {
+function renderStaticEntry(
+  entry: FeedEntry,
+  onToggle: (id: string) => void,
+  onToggleSwarmAgent: (swarmId: string, sectionId: string) => void,
+) {
   switch (entry.kind) {
     case "user":
       return <UserMessage key={entry.id} text={entry.text} />;
     case "turn":
       return <AgentTurn key={entry.id} entry={entry} onToggle={onToggle} />;
+    case "swarm-turn":
+      return (
+        <SwarmTurnCard
+          key={entry.id}
+          entry={entry}
+          onToggleAgent={onToggleSwarmAgent}
+        />
+      );
     case "error":
       return (
         <Box key={entry.id} marginBottom={1}>
@@ -33,14 +48,21 @@ function renderStaticEntry(entry: FeedEntry, onToggle: (id: string) => void) {
   }
 }
 
-export function Feed({ entries, processing, onToggle, focusedId }: FeedProps) {
-  // Find the last turn by index — everything BEFORE it is frozen in Static,
-  // the last turn and anything after it (e.g. system messages) render live
-  // in document order. Using filter() was wrong: it yanked the last turn out
-  // of its position and re-appended it at the bottom, after later entries.
+export function Feed({
+  entries,
+  processing,
+  onToggle,
+  onToggleSwarmAgent,
+  focusedId,
+  focusedSwarmSectionId,
+}: FeedProps) {
+  // Find the last live entry — either an incomplete agent turn or a running
+  // swarm-turn. Everything BEFORE it is frozen in Static; from it onwards
+  // entries render live in document order.
   let lastTurnIndex = -1;
   for (let i = entries.length - 1; i >= 0; i--) {
-    if (entries[i].kind === "turn") {
+    const e = entries[i];
+    if (e.kind === "turn" || (e.kind === "swarm-turn" && !e.done)) {
       lastTurnIndex = i;
       break;
     }
@@ -51,14 +73,14 @@ export function Feed({ entries, processing, onToggle, focusedId }: FeedProps) {
 
   return (
     <Box flexDirection="column" flexGrow={1} overflow="hidden">
-      {/* Entries before the last turn — rendered once and frozen */}
+      {/* Entries before the last live entry — rendered once and frozen */}
       {staticEntries.length > 0 && (
         <Static items={staticEntries}>
-          {(entry) => renderStaticEntry(entry, onToggle)}
+          {(entry) => renderStaticEntry(entry, onToggle, onToggleSwarmAgent)}
         </Static>
       )}
 
-      {/* Last turn + any entries after it — live, in document order */}
+      {/* Last live entry + anything after it — rendered dynamically */}
       {dynamicEntries.map((entry) => {
         if (entry.kind === "turn") {
           return (
@@ -71,8 +93,18 @@ export function Feed({ entries, processing, onToggle, focusedId }: FeedProps) {
             />
           );
         }
-        // Non-turn entries that follow the last turn (system messages, errors)
-        return renderStaticEntry(entry, onToggle);
+        if (entry.kind === "swarm-turn") {
+          return (
+            <SwarmTurnCard
+              key={entry.id}
+              entry={entry}
+              onToggleAgent={onToggleSwarmAgent}
+              focusedSectionId={focusedSwarmSectionId ?? null}
+            />
+          );
+        }
+        // Non-live entries that follow (system messages, errors)
+        return renderStaticEntry(entry, onToggle, onToggleSwarmAgent);
       })}
     </Box>
   );

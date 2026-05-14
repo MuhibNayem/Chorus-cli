@@ -8,7 +8,7 @@ import { hasRequiredLlmSettings } from "./settings/storage.js";
 import { ConfigWizard } from "./settings/configWizard.js";
 import { sessionManager } from "./session/manager.js";
 
-const HELP_TEXT = `chorus-agent-cli
+const HELP_TEXT = `Chorus
 
 Usage:
   chorus
