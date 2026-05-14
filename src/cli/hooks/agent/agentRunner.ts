@@ -1,4 +1,4 @@
-import { createDeepAgent } from "deepagents";
+import { createDeepAgent, FilesystemBackend } from "deepagents";
 import { Command, MemorySaver } from "@langchain/langgraph";
 import { AIMessage, HumanMessage, SystemMessage } from "@langchain/core/messages";
 import type { BaseMessage } from "@langchain/core/messages";
@@ -24,6 +24,7 @@ import { processAgentStream } from "../../agent/streamProcessor.js";
 import type { HitlInterrupt } from "../../agent/streamProcessor.js";
 import { rememberCompletedTask } from "../../../harness/projectMemory.js";
 import { filterToolsForPolicy } from "./toolPolicy.js";
+import { normalizeDeepAgentToolArgsMiddleware } from "./deepAgentToolMiddleware.js";
 import type { Dispatch } from "react";
 import type { FeedAction } from "../../state/feedReducer.js";
 import type { Message, AgentLike } from "./types.js";
@@ -34,9 +35,13 @@ type HitlDecision =
 type DeepAgentOptions = NonNullable<Parameters<typeof createDeepAgent>[0]>;
 
 const hitlCheckpointer = new MemorySaver();
+const workspaceBackend = new FilesystemBackend({
+  rootDir: process.cwd(),
+  virtualMode: true,
+});
 const HITL_TOOL_DESCRIPTIONS: Record<string, string> = {
-  file_write: "Review this file write before it changes the workspace.",
-  file_edit: "Review this targeted file edit before it changes the workspace.",
+  write_file: "Review this file write before it changes the workspace.",
+  edit_file: "Review this targeted file edit before it changes the workspace.",
   run_command: "Review this shell command before it runs.",
   git_commit: "Review this git commit before it records changes.",
   delegate_to_subagent: "Review this delegation before another agent starts work.",
@@ -148,13 +153,20 @@ function createConfiguredAgent({
     model,
     tools,
     systemPrompt: runtimePrompt,
+    backend: workspaceBackend,
+    middleware: [normalizeDeepAgentToolArgsMiddleware],
   };
   if (interruptOn) {
     agentOptions.interruptOn = interruptOn;
     agentOptions.checkpointer = hitlCheckpointer;
   }
+  if (mode === "plan" || approvalPolicy === "suggest") {
+    agentOptions.permissions = [
+      { operations: ["write"], paths: ["/**"], mode: "deny" },
+    ];
+  }
   if (process.env.DISABLE_TODO_MIDDLEWARE === "1") {
-    agentOptions.middleware = [];
+    agentOptions.middleware = [normalizeDeepAgentToolArgsMiddleware];
   }
 
   return createDeepAgent(agentOptions) as AgentLike;

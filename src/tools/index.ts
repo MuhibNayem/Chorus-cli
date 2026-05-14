@@ -1,11 +1,10 @@
 import { GitStatusTool, GitDiffTool, GitLogTool, GitBranchTool, GitCommitTool } from "./git.js";
 import { InternetSearchTool, WeatherTool } from "./web-search.js";
-import { filesystemTools } from "./filesystem.js";
 import { shellTools } from "./shell.js";
 
 export const allTools = [
-  // Filesystem (workspace-confined)
-  ...filesystemTools,
+  // DeepAgents provides filesystem tools: ls, read_file, write_file, edit_file, glob, grep.
+  // Avoid registering a second filesystem API with different schemas.
   // Shell execution (safe allowlist)
   ...shellTools,
   // Git

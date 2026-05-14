@@ -75,9 +75,9 @@ describe("routeTask", () => {
   });
 
   it("maps approval policy to tool capability sets", () => {
-    expect(toolNamesForPolicy("plan", "full_auto")?.has("file_write")).toBe(false);
-    expect(toolNamesForPolicy("build", "suggest")?.has("file_edit")).toBe(false);
-    expect(toolNamesForPolicy("build", "auto_edit")?.has("file_edit")).toBe(true);
+    expect(toolNamesForPolicy("plan", "full_auto")?.has("write_file")).toBe(false);
+    expect(toolNamesForPolicy("build", "suggest")?.has("edit_file")).toBe(false);
+    expect(toolNamesForPolicy("build", "auto_edit")?.has("edit_file")).toBe(true);
     expect(toolNamesForPolicy("build", "auto_edit")?.has("run_command")).toBe(false);
     expect(toolNamesForPolicy("build", "full_auto")).toBeNull();
   });

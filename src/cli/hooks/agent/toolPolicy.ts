@@ -3,7 +3,7 @@ export type { ApprovalPolicy, ExecutionMode };
 
 type ToolLike = { name?: string };
 
-const MUTATING_TOOLS = new Set(["file_write", "file_edit", "run_command", "git_commit", "delegate_to_subagent"]);
+const MUTATING_TOOLS = new Set(["write_file", "edit_file", "run_command", "git_commit", "delegate_to_subagent"]);
 const SHELL_TOOLS = new Set(["run_command"]);
 
 export function filterToolsForPolicy(
@@ -22,13 +22,13 @@ export function filterToolsForPolicy(
 
 export function toolNamesForPolicy(mode: ExecutionMode, policy: ApprovalPolicy): Set<string> | null {
   if (mode === "plan") {
-    return new Set(["file_read", "grep", "internet_search", "weather"]);
+    return new Set(["ls", "read_file", "glob", "grep", "internet_search", "weather"]);
   }
   if (policy === "suggest") {
-    return new Set(["file_read", "grep", "internet_search", "weather", "file_write"]);
+    return new Set(["ls", "read_file", "glob", "grep", "internet_search", "weather", "write_file"]);
   }
   if (policy === "auto_edit") {
-    return new Set(["file_read", "grep", "internet_search", "weather", "file_write", "file_edit"]);
+    return new Set(["ls", "read_file", "glob", "grep", "internet_search", "weather", "write_file", "edit_file"]);
   }
   if (policy === "full_auto") {
     return null; // null = all tools

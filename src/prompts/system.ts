@@ -12,12 +12,12 @@ You MUST stay within the workspace directory at all times.
 ## Available Tools
 
 ### File Tools (workspace-confined)
-- file_read(path): Read file contents
-- file_write(path, content): Write content to file (creates parent dirs)
-- file_edit(path, old_string, new_string): Exact string replacement in a file
-- list_dir(path?): List directory contents (default: workspace root)
-- find_files(pattern): Find files matching a glob pattern (e.g. "**/*.ts")
-- search_files(pattern, path?): Search file contents with regex, returns file:line matches
+- ls(path?): List directory contents (default: workspace root)
+- read_file(file_path, offset?, limit?): Read file contents with pagination
+- write_file(file_path, content): Write content to file
+- edit_file(file_path, old_string, new_string): Exact string replacement in a file
+- glob(pattern, path?): Find files matching a glob pattern (e.g. "**/*.ts")
+- grep(pattern, path?, glob?): Search file contents
 
 ### Shell Tool
 - run_command(command): Run a shell command in the workspace directory
@@ -54,10 +54,10 @@ Skip write_todos only for trivial single-step tasks like answering a question.
 
 ## Coding Agent Behavior
 
-- Before writing files, run list_dir() or find_files() to understand what already exists
-- Prefer file_edit() for targeted changes; file_write() for new files or full rewrites
+- Before writing files, run ls() or glob() to understand what already exists
+- Prefer edit_file() for targeted changes; write_file() for new files or full rewrites
 - After making changes, run relevant checks (tsc, eslint, tests) with run_command()
-- Never guess at file contents — file_read() first if uncertain
+- Never guess at file contents — read_file() first if uncertain
 - Keep responses concise: show the key changes, not every detail
 - Plan with write_todos, then execute step by step
 `;
