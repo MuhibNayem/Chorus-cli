@@ -153,6 +153,72 @@ describe("processAgentStream", () => {
     expect(tokenCalls.length).toBe(0);
   });
 
+  it("marks tool calls complete when tool results arrive in updates mode", async () => {
+    const dispatch = vi.fn() as (action: FeedAction) => void;
+    const dbg = vi.fn();
+
+    async function* mockStream() {
+      yield ["updates", {
+        agent: {
+          messages: [{
+            type: "AIMessage",
+            content: "",
+            tool_calls: [{ id: "tool-1", name: "run_command", args: { command: "curl -s https://example.com" } }],
+          }],
+        },
+      }];
+      yield ["updates", {
+        tools: {
+          messages: [{ type: "ToolMessage", tool_call_id: "tool-1", content: "ok" }],
+        },
+      }];
+    }
+
+    await processAgentStream(mockStream() as any, dispatch, dbg);
+
+    expect(dispatch).toHaveBeenCalledWith({
+      type: "ADD_TOOL_CALL",
+      toolCall: {
+        id: "tool-1",
+        name: "run_command",
+        args: { command: "curl -s https://example.com" },
+        status: "running",
+      },
+    });
+    expect(dispatch).toHaveBeenCalledWith({
+      type: "UPDATE_TOOL_CALL",
+      id: "tool-1",
+      result: "ok",
+      status: "done",
+    });
+  });
+
+  it("closes unresolved tool cards when the stream ends without a tool result", async () => {
+    const dispatch = vi.fn() as (action: FeedAction) => void;
+    const dbg = vi.fn();
+
+    async function* mockStream() {
+      yield ["updates", {
+        agent: {
+          messages: [{
+            type: "AIMessage",
+            content: "",
+            tool_calls: [{ id: "tool-1", name: "run_command", args: { command: "curl -s https://example.com" } }],
+          }],
+        },
+      }];
+    }
+
+    await processAgentStream(mockStream() as any, dispatch, dbg);
+
+    expect(dispatch).toHaveBeenCalledWith({
+      type: "UPDATE_TOOL_CALL",
+      id: "tool-1",
+      result: "Tool call ended without a result from the model stream.",
+      status: "done",
+    });
+  });
+
   it("returns native HITL interrupts from updates mode", async () => {
     const dispatch = vi.fn() as (action: FeedAction) => void;
     const dbg = vi.fn();

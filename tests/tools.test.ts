@@ -1,5 +1,12 @@
-import { describe, expect, it } from "vitest";
-import { ExecuteTool, GrepTool } from "../src/tools/index.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { ExecuteTool, GrepTool, InternetSearchTool } from "../src/tools/index.js";
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  delete process.env.SERPER_API_KEY;
+  delete process.env.GOOGLE_CSE_API_KEY;
+  delete process.env.GOOGLE_CSE_ID;
+});
 
 describe("ExecuteTool", () => {
   it("runs a simple allowed command without shell interpolation", async () => {
@@ -45,5 +52,49 @@ describe("GrepTool", () => {
     const result = await GrepTool.invoke({ pattern: "ExecuteTool" });
     expect(result).not.toContain("EISDIR");
     expect(result).toContain("tests/tools.test.ts");
+  });
+});
+
+describe("InternetSearchTool", () => {
+  it("uses Serper organic results", async () => {
+    process.env.SERPER_API_KEY = "serper-key";
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        organic: [{ title: "Result A", snippet: "Snippet A", link: "https://example.com/a" }],
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await InternetSearchTool.invoke({ query: "example", maxResults: 5 });
+
+    expect(result).toContain("Source: Serper");
+    expect(result).toContain("Result A");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls back to Google CSE when Serper has no results", async () => {
+    process.env.SERPER_API_KEY = "serper-key";
+    process.env.GOOGLE_CSE_API_KEY = "google-key";
+    process.env.GOOGLE_CSE_ID = "google-cx";
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ organic: [] }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          items: [{ title: "Fallback", snippet: "Fallback snippet", link: "https://example.com/fallback" }],
+        }),
+      });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await InternetSearchTool.invoke({ query: "example", maxResults: 5 });
+
+    expect(result).toContain("Source: Google CSE fallback");
+    expect(result).toContain("Fallback");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });

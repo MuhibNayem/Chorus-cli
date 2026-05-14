@@ -228,7 +228,7 @@ function validateWorkspacePaths(tokens: string[]): string | null {
 }
 
 export const ExecuteTool = tool(
-  async ({ command }: { command: string }) => {
+  async ({ command, timeoutMs }: { command: string; timeoutMs?: number }) => {
     if (hasShellSyntax(command)) {
       auditCommand({ command, allowed: false, reason: "shell syntax/operator blocked" });
       return "Blocked: shell operators, redirection, command substitution, and pipelines are not allowed.";
@@ -243,7 +243,8 @@ export const ExecuteTool = tool(
     }
 
     const { env, argv } = splitEnvAssignments(tokens);
-    const [base, ...args] = argv;
+    const [base, ...rawArgs] = argv;
+    let args = rawArgs;
 
     if (!base) {
       auditCommand({ command, allowed: false, reason: "empty command" });
@@ -281,16 +282,38 @@ export const ExecuteTool = tool(
 
     try {
       auditCommand({ command, allowed: true });
+      if (base === "curl") {
+        const hasMaxTime = args.includes("--max-time") || args.includes("-m") || args.some((arg) => arg.startsWith("--max-time="));
+        const hasConnectTimeout = args.includes("--connect-timeout") || args.some((arg) => arg.startsWith("--connect-timeout="));
+        args = [
+          ...(hasMaxTime ? [] : ["--max-time", "30"]),
+          ...(hasConnectTimeout ? [] : ["--connect-timeout", "10"]),
+          ...args,
+        ];
+      }
+      if (base === "wget") {
+        const hasTimeout = args.includes("--timeout") || args.some((arg) => arg.startsWith("--timeout="));
+        const hasTries = args.includes("--tries") || args.some((arg) => arg.startsWith("--tries="));
+        args = [
+          ...(hasTimeout ? [] : ["--timeout=30"]),
+          ...(hasTries ? [] : ["--tries=1"]),
+          ...args,
+        ];
+      }
+      const timeout = Math.min(120000, Math.max(1000, Math.trunc(timeoutMs ?? 60000)));
       const { stdout, stderr } = await execFileAsync(base, args, {
         cwd: WORKSPACE,
-        timeout: 60000,
+        timeout,
         env: { ...process.env, ...env, FORCE_COLOR: "0" },
       });
       const out = [stdout, stderr].filter(Boolean).join("\n--- stderr ---\n").trim();
       return out || "[no output]";
     } catch (err) {
-      const e = err as { stdout?: string; stderr?: string; message?: string };
+      const e = err as { stdout?: string; stderr?: string; message?: string; signal?: string; killed?: boolean };
       const out = [e.stdout, e.stderr, e.message].filter(Boolean).join("\n").trim();
+      if (e.killed || e.signal === "SIGTERM" || /timed out|timeout/i.test(e.message ?? "")) {
+        return `Error: command timed out.\n${out}`;
+      }
       return `Error (exit non-zero):\n${out}`;
     }
   },
@@ -301,6 +324,7 @@ Allowed base commands: git, npm, yarn, pnpm, bun, node, tsx, tsc, cargo, go, pyt
 All paths MUST be relative to the workspace. Absolute paths outside the workspace are rejected.`,
     schema: z.object({
       command: z.string().describe("Shell command to run. Use relative paths only."),
+      timeoutMs: z.number().optional().describe("Optional timeout in milliseconds, clamped to 1s-120s."),
     }),
   }
 );

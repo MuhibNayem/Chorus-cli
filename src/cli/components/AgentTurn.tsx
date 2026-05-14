@@ -7,6 +7,7 @@ import { SubagentCard } from "./SubagentCard.js";
 import { useCursor } from "../hooks/useSpinner.js";
 
 type TurnEntry = Extract<FeedEntry, { kind: "turn" }>;
+const MAX_RESPONSE_DISPLAY_CHARS = 8000;
 
 interface AgentTurnProps {
   entry: TurnEntry;
@@ -96,11 +97,15 @@ export function AgentTurn({ entry, onToggle, isLive = false, focusedId = null }:
         if (ev.kind === "response") {
           const text = ev.text;
           const isLastEvent = i === entry.events.length - 1;
+          const omittedChars = Math.max(0, text.length - MAX_RESPONSE_DISPLAY_CHARS);
+          const displayText = omittedChars > 0
+            ? `... ${omittedChars.toLocaleString()} earlier chars hidden while rendering; full text remains in session history ...\n${text.slice(-MAX_RESPONSE_DISPLAY_CHARS)}`
+            : text;
           if (!text) return null;
           return (
             <Box key={`resp-${i}`} marginLeft={2}>
               <Text wrap="wrap">
-                {text}
+                {displayText}
                 {isStreamingResponse && isLastEvent ? cursor : ""}
               </Text>
             </Box>

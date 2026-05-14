@@ -93,7 +93,7 @@ describe("APPEND_RESPONSE_TOKEN", () => {
       expect(turn.events).toHaveLength(1);
       expect(turn.events[0]).toMatchObject({
         kind: "response",
-        tokens: ["Hello", " world"],
+        text: "Hello world",
       });
     }
   });

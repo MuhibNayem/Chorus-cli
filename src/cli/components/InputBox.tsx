@@ -1,4 +1,5 @@
 import { Box, Text } from "ink";
+import { memo } from "react";
 import TextInput from "ink-text-input";
 
 interface InputBoxProps {
@@ -50,7 +51,7 @@ function PastePreview({ text }: { text: string }) {
   );
 }
 
-export function InputBox({
+function InputBoxInner({
   value,
   onChange,
   onSubmit,
@@ -102,3 +103,5 @@ export function InputBox({
     </Box>
   );
 }
+
+export const InputBox = memo(InputBoxInner);

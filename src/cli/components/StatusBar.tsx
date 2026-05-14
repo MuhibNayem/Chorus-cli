@@ -4,7 +4,9 @@ import { useSpinner } from "../hooks/useSpinner.js";
 import type { ApprovalPolicy, ExecutionMode } from "../../harness/types.js";
 
 const DEFAULT_MAX_TOKENS = 128_000;
-const BAR_WIDTH = 20;
+const BAR_WIDTH = 12;
+const MAX_MODEL_LABEL = 28;
+const MAX_SESSION_LABEL = 16;
 
 export type AgentState = "idle" | "thinking" | "tool" | "error";
 
@@ -22,6 +24,10 @@ function tokensToDisplay(n: number): string {
   if (n < 1_000) return `${n}`;
   if (n < 1_000_000) return `${(n / 1_000).toFixed(1)}K`;
   return `${(n / 1_000_000).toFixed(1)}M`;
+}
+
+function truncate(value: string, max: number): string {
+  return value.length > max ? `${value.slice(0, Math.max(0, max - 1))}…` : value;
 }
 
 const STATE_DOT_COLOR: Record<AgentState, string> = {
@@ -60,13 +66,14 @@ function StatusBarInner({
     ? `${spinner} ${STATE_LABEL[agentState]}…`
     : STATE_LABEL[agentState];
 
+  const safeModelLabel = truncate(modelLabel, MAX_MODEL_LABEL);
   const sessionTag = sessionName
-    ? `[${sessionName.length > 20 ? sessionName.slice(0, 19) + "…" : sessionName}]  `
+    ? `[${truncate(sessionName, MAX_SESSION_LABEL)}]  `
     : "";
 
   return (
     <Box borderStyle="single" borderColor="grey" paddingLeft={1} paddingRight={1}>
-      <Text bold color="white">{modelLabel}</Text>
+      <Text bold color="white">{safeModelLabel}</Text>
       <Text>{"  "}</Text>
       <Text color={executionMode === "plan" ? "yellow" : "green"}>{executionMode.toUpperCase()}</Text>
       <Text color="grey">{`/${approvalPolicy.replace("_", "-")}  `}</Text>

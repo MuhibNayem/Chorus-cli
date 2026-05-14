@@ -62,9 +62,9 @@ function toolResultContent(value: unknown): string {
   return typeof value === "string" ? value : JSON.stringify(value);
 }
 
-function updateToolResult(message: MessageLike, dispatch: Dispatch<FeedAction>, dbg: DebugFn): void {
+function updateToolResult(message: MessageLike, dispatch: Dispatch<FeedAction>, dbg: DebugFn): string | null {
   const toolCallId = message.tool_call_id;
-  if (!toolCallId || message.content === undefined) return;
+  if (!toolCallId || message.content === undefined) return null;
 
   dispatch({
     type: "UPDATE_TOOL_CALL",
@@ -73,6 +73,7 @@ function updateToolResult(message: MessageLike, dispatch: Dispatch<FeedAction>, 
     status: "done",
   });
   dbg("TOOL_RESULT", { toolCallId });
+  return toolCallId;
 }
 
 function nodeMessages(data: unknown): MessageLike[] {
@@ -195,6 +196,7 @@ export async function processAgentStream(
   dbg: DebugFn
 ): Promise<StreamResult> {
   const dispatchedToolIds = new Set<string>();
+  const completedToolIds = new Set<string>();
   let lastAiMessage: MessageLike | null = null;
   let responseTextFromStream = "";
   let reasoningContentFromStream = "";
@@ -203,8 +205,9 @@ export async function processAgentStream(
   const thinkParser = new ThinkTagParser();
 
   // ── Token batching ──────────────────────────────────────────────────────────
-  // Buffer tokens and flush at most every 32ms (~30fps) to avoid triggering
-  // a full Ink terminal repaint on every single chunk from the LLM stream.
+  // Buffer tokens and flush at most every 100ms. Ink re-wraps the live response
+  // on every dispatch, so tiny token batches make large responses visibly flicker.
+  // The stream result still records every token; this only throttles UI paints.
   let pendingResponse = "";
   let pendingThinking = "";
   let flushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -223,7 +226,7 @@ export async function processAgentStream(
 
   function scheduleFlush() {
     if (flushTimer === null) {
-      flushTimer = setTimeout(flushPending, 32);
+      flushTimer = setTimeout(flushPending, 100);
     }
   }
   // ────────────────────────────────────────────────────────────────────────────
@@ -280,7 +283,8 @@ export async function processAgentStream(
         }
 
         if (type === "ToolMessage" || type === "tool") {
-          updateToolResult(message, dispatch, dbg);
+          const completedToolId = updateToolResult(message, dispatch, dbg);
+          if (completedToolId) completedToolIds.add(completedToolId);
         }
       }
 
@@ -300,6 +304,12 @@ export async function processAgentStream(
 
         for (const message of nodeMessages(data)) {
           const type = messageType(message);
+          if (type === "ToolMessage" || type === "tool") {
+            const completedToolId = updateToolResult(message, dispatch, dbg);
+            if (completedToolId) completedToolIds.add(completedToolId);
+            continue;
+          }
+
           const isAi = type === "AIMessage" || type === "ai" || type === "assistant";
           if (!isAi) continue;
 
@@ -361,6 +371,17 @@ export async function processAgentStream(
 
   // Flush any remaining buffered tokens before returning
   if (flushTimer !== null) { clearTimeout(flushTimer); flushPending(); }
+
+  for (const toolCallId of dispatchedToolIds) {
+    if (completedToolIds.has(toolCallId)) continue;
+    dispatch({
+      type: "UPDATE_TOOL_CALL",
+      id: toolCallId,
+      result: "Tool call ended without a result from the model stream.",
+      status: hadError ? "error" : "done",
+    });
+    dbg("TOOL_RESULT_MISSING", { toolCallId });
+  }
 
   const aiMessageContent = messageContent(lastAiMessage ?? {});
   const finalContent = (aiMessageContent ? stripThinkTags(aiMessageContent) : "") || responseTextFromStream;

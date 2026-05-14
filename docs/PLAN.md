@@ -35,7 +35,7 @@ deep-agent-cli/
 │   │   ├── file.ts                      # read_file, write_file, edit_file, ls, glob, grep
 │   │   ├── shell.ts                     # execute (restricted safe list)
 │   │   ├── git.ts                       # git_status, git_diff, git_log, git_branch, git_commit
-│   │   └── web-search.ts                # internet_search (Serper), web_search (Google CSE)
+│   │   └── web-search.ts                # internet_search (Serper primary, Google CSE fallback)
 │   ├── subagents/
 │   │   ├── index.ts                     # Subagent registry
 │   │   ├── planner.ts                   # Planner subagent config
@@ -394,8 +394,7 @@ You have access to the following tools:
 - git_commit(message): Commit changes
 
 ### Web Search Tools
-- internet_search(query): Search the web (Serper)
-- web_search(query): Search the web (Google CSE)
+- internet_search(query): Search the web (Serper primary, Google CSE fallback)
 
 ## Subagents
 
@@ -1040,10 +1039,22 @@ export const InternetSearchTool = tool(
       }
 
       const data = await response.json() as {
-        results?: Array<{ title: string; snippet: string; link: string }>;
+        organic?: Array<{ title: string; snippet: string; link: string }>;
       };
 
-      const results = data.results ?? [];
+      let results = data.organic ?? [];
+      if (!results.length && GOOGLE_CSE_API_KEY && GOOGLE_CSE_ID) {
+        const url = new URL("https://www.googleapis.com/customsearch/v1");
+        url.searchParams.set("key", GOOGLE_CSE_API_KEY);
+        url.searchParams.set("cx", GOOGLE_CSE_ID);
+        url.searchParams.set("q", query);
+        url.searchParams.set("num", String(maxResults));
+        const fallback = await fetch(url.toString());
+        const fallbackData = await fallback.json() as {
+          items?: Array<{ title: string; snippet: string; link: string }>;
+        };
+        results = fallbackData.items ?? [];
+      }
       if (!results.length) return "No results found";
 
       return results
@@ -1055,49 +1066,7 @@ export const InternetSearchTool = tool(
   },
   {
     name: "internet_search",
-    description: "Search the web using Serper API",
-    schema: z.object({
-      query: z.string().describe("The search query"),
-      maxResults: z.number().optional().default(5).describe("Maximum number of results"),
-    }),
-  }
-);
-
-export const WebSearchTool = tool(
-  async ({ query, maxResults = 5 }: { query: string; maxResults?: number }) => {
-    if (!GOOGLE_CSE_API_KEY || !GOOGLE_CSE_ID) {
-      return "Error: GOOGLE_CSE_API_KEY or GOOGLE_CSE_ID not set";
-    }
-
-    try {
-      const url = new URL("https://www.googleapis.com/customsearch/v1");
-      url.searchParams.set("key", GOOGLE_CSE_API_KEY);
-      url.searchParams.set("cx", GOOGLE_CSE_ID);
-      url.searchParams.set("q", query);
-      url.searchParams.set("num", String(maxResults));
-
-      const response = await fetch(url.toString());
-      if (!response.ok) {
-        return `Google CSE error: ${response.status}`;
-      }
-
-      const data = await response.json() as {
-        items?: Array<{ title: string; snippet: string; link: string }>;
-      };
-
-      const results = data.items ?? [];
-      if (!results.length) return "No results found";
-
-      return results
-        .map((r, i) => `${i + 1}. ${r.title}\n   ${r.snippet}\n   URL: ${r.link}`)
-        .join("\n\n");
-    } catch (error) {
-      return `Search error: ${error instanceof Error ? error.message : String(error)}`;
-    }
-  },
-  {
-    name: "web_search",
-    description: "Search the web using Google Custom Search Engine",
+    description: "Search the web using Serper first, with Google CSE fallback",
     schema: z.object({
       query: z.string().describe("The search query"),
       maxResults: z.number().optional().default(5).describe("Maximum number of results"),
@@ -1112,7 +1081,7 @@ export const WebSearchTool = tool(
 import { ReadFileTool, WriteFileTool, EditFileTool, LsTool, GlobTool, GrepTool } from "./file.ts";
 import { ExecuteTool } from "./shell.ts";
 import { GitStatusTool, GitDiffTool, GitLogTool, GitBranchTool, GitCommitTool } from "./git.ts";
-import { InternetSearchTool, WebSearchTool } from "./web-search.ts";
+import { InternetSearchTool } from "./web-search.ts";
 
 export const allTools = [
   ReadFileTool,
@@ -1128,13 +1097,12 @@ export const allTools = [
   GitBranchTool,
   GitCommitTool,
   InternetSearchTool,
-  WebSearchTool,
 ];
 
 export const fileTools = [ReadFileTool, WriteFileTool, EditFileTool, LsTool, GlobTool, GrepTool];
 export const shellTools = [ExecuteTool];
 export const gitTools = [GitStatusTool, GitDiffTool, GitLogTool, GitBranchTool, GitCommitTool];
-export const webSearchTools = [InternetSearchTool, WebSearchTool];
+export const webSearchTools = [InternetSearchTool];
 
 export * from "./file.ts";
 export * from "./shell.ts";

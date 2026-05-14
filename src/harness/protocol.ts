@@ -44,7 +44,7 @@ export function buildExecutionProtocol(
     suggestedChecks.push("npm test", "npm run build");
   }
   if (route.requiresResearch) {
-    suggestedChecks.push("web_search for relevant documentation");
+    suggestedChecks.push("internet_search for relevant documentation");
   }
 
   const delegationPolicy =

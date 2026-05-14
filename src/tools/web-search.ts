@@ -2,91 +2,110 @@ import { tool } from "@langchain/core/tools";
 import { z } from "zod";
 import { getSerperApiKey, getGoogleCseApiKey, getGoogleCseId, getWeatherApiKey } from "../settings/storage.js";
 
+type SearchResult = {
+  title: string;
+  snippet: string;
+  link: string;
+};
+
+function formatSearchResults(results: SearchResult[], provider: string): string {
+  return [
+    `Source: ${provider}`,
+    "",
+    ...results.map((r, i) => `${i + 1}. ${r.title}\n   ${r.snippet}\n   URL: ${r.link}`),
+  ].join("\n");
+}
+
+function normalizeMaxResults(maxResults: number | undefined): number {
+  return Math.min(10, Math.max(1, Math.trunc(maxResults ?? 5)));
+}
+
+async function searchSerper(query: string, maxResults: number): Promise<SearchResult[] | string> {
+  const apiKey = getSerperApiKey();
+  if (!apiKey) {
+    return "Serper API key is not configured.";
+  }
+
+  const response = await fetch("https://google.serper.dev/search", {
+    method: "POST",
+    headers: {
+      "X-API-KEY": apiKey,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ q: query, num: maxResults }),
+  });
+
+  if (!response.ok) {
+    return `Serper error: ${response.status}`;
+  }
+
+  const data = await response.json() as {
+    organic?: SearchResult[];
+    news?: SearchResult[];
+    results?: SearchResult[];
+  };
+
+  return [...(data.organic ?? []), ...(data.news ?? []), ...(data.results ?? [])].slice(0, maxResults);
+}
+
+async function searchGoogleCse(query: string, maxResults: number): Promise<SearchResult[] | string> {
+  const apiKey = getGoogleCseApiKey();
+  const cseId = getGoogleCseId();
+  if (!apiKey || !cseId) {
+    return "Google CSE is not configured.";
+  }
+
+  const url = new URL("https://www.googleapis.com/customsearch/v1");
+  url.searchParams.set("key", apiKey);
+  url.searchParams.set("cx", cseId);
+  url.searchParams.set("q", query);
+  url.searchParams.set("num", String(maxResults));
+
+  const response = await fetch(url.toString());
+  if (!response.ok) {
+    return `Google CSE error: ${response.status}`;
+  }
+
+  const data = await response.json() as {
+    items?: SearchResult[];
+  };
+
+  return (data.items ?? []).slice(0, maxResults);
+}
+
 export const InternetSearchTool = tool(
   async ({ query, maxResults = 5 }: { query: string; maxResults?: number }) => {
-    const SERPER_API_KEY = getSerperApiKey();
-    if (!SERPER_API_KEY) {
-      return "Error: SERPER_API_KEY not set. Run /config to configure it.";
-    }
+    const limit = normalizeMaxResults(maxResults);
+    const attempts: string[] = [];
 
     try {
-      const response = await fetch("https://google.serper.dev/search", {
-        method: "POST",
-        headers: {
-          "X-API-KEY": SERPER_API_KEY,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ q: query, num: maxResults }),
-      });
-
-      if (!response.ok) {
-        return `Serper error: ${response.status}`;
+      const serperResult = await searchSerper(query, limit);
+      if (Array.isArray(serperResult) && serperResult.length > 0) {
+        return formatSearchResults(serperResult, "Serper");
       }
+      attempts.push(
+        Array.isArray(serperResult) ? "Serper returned no results." : serperResult
+      );
 
-      const data = await response.json() as {
-        results?: Array<{ title: string; snippet: string; link: string }>;
-      };
+      const googleResult = await searchGoogleCse(query, limit);
+      if (Array.isArray(googleResult) && googleResult.length > 0) {
+        return formatSearchResults(googleResult, "Google CSE fallback");
+      }
+      attempts.push(
+        Array.isArray(googleResult) ? "Google CSE returned no results." : googleResult
+      );
 
-      const results = data.results ?? [];
-      if (!results.length) return "No results found";
-
-      return results
-        .map((r, i) => `${i + 1}. ${r.title}\n   ${r.snippet}\n   URL: ${r.link}`)
-        .join("\n\n");
+      return `No results found.\n${attempts.map((a) => `- ${a}`).join("\n")}`;
     } catch (error) {
       return `Search error: ${error instanceof Error ? error.message : String(error)}`;
     }
   },
   {
     name: "internet_search",
-    description: "Search the web using Serper API",
+    description: "Search the web. Uses Serper first and falls back to Google Custom Search when configured.",
     schema: z.object({
       query: z.string().describe("The search query"),
-      maxResults: z.number().optional().default(5).describe("Maximum number of results"),
-    }),
-  }
-);
-
-export const WebSearchTool = tool(
-  async ({ query, maxResults = 5 }: { query: string; maxResults?: number }) => {
-    const GOOGLE_CSE_API_KEY = getGoogleCseApiKey();
-    const GOOGLE_CSE_ID = getGoogleCseId();
-    if (!GOOGLE_CSE_API_KEY || !GOOGLE_CSE_ID) {
-      return "Error: GOOGLE_CSE_API_KEY or GOOGLE_CSE_ID not set. Run /config to configure them.";
-    }
-
-    try {
-      const url = new URL("https://www.googleapis.com/customsearch/v1");
-      url.searchParams.set("key", GOOGLE_CSE_API_KEY);
-      url.searchParams.set("cx", GOOGLE_CSE_ID);
-      url.searchParams.set("q", query);
-      url.searchParams.set("num", String(maxResults));
-
-      const response = await fetch(url.toString());
-      if (!response.ok) {
-        return `Google CSE error: ${response.status}`;
-      }
-
-      const data = await response.json() as {
-        items?: Array<{ title: string; snippet: string; link: string }>;
-      };
-
-      const results = data.items ?? [];
-      if (!results.length) return "No results found";
-
-      return results
-        .map((r, i) => `${i + 1}. ${r.title}\n   ${r.snippet}\n   URL: ${r.link}`)
-        .join("\n\n");
-    } catch (error) {
-      return `Search error: ${error instanceof Error ? error.message : String(error)}`;
-    }
-  },
-  {
-    name: "web_search",
-    description: "Search the web using Google Custom Search Engine",
-    schema: z.object({
-      query: z.string().describe("The search query"),
-      maxResults: z.number().optional().default(5).describe("Maximum number of results"),
+      maxResults: z.number().optional().default(5).describe("Maximum number of results, 1-10"),
     }),
   }
 );

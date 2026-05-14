@@ -22,13 +22,13 @@ export function filterToolsForPolicy(
 
 export function toolNamesForPolicy(mode: ExecutionMode, policy: ApprovalPolicy): Set<string> | null {
   if (mode === "plan") {
-    return new Set(["file_read", "grep", "web_search", "weather"]);
+    return new Set(["file_read", "grep", "internet_search", "weather"]);
   }
   if (policy === "suggest") {
-    return new Set(["file_read", "grep", "web_search", "weather", "file_write"]);
+    return new Set(["file_read", "grep", "internet_search", "weather", "file_write"]);
   }
   if (policy === "auto_edit") {
-    return new Set(["file_read", "grep", "web_search", "weather", "file_write", "file_edit"]);
+    return new Set(["file_read", "grep", "internet_search", "weather", "file_write", "file_edit"]);
   }
   if (policy === "full_auto") {
     return null; // null = all tools

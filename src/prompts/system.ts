@@ -31,8 +31,7 @@ You MUST stay within the workspace directory at all times.
 - git_commit(message): Commit staged changes
 
 ### Web Search Tools
-- internet_search(query): Search the web (Serper)
-- web_search(query): Search the web (Google CSE)
+- internet_search(query): Search the web (Serper primary, Google CSE fallback)
 
 ## Subagents
 

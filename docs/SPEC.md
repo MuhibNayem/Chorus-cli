@@ -48,7 +48,7 @@ An interactive coding agent CLI with an Ink-based terminal UI that streams agent
 #### VAPT Specialist
 - **Role:** Offensive security researcher, penetration tester
 - **System Prompt:** Think like an attacker, find vulns, misconfigs, CVE analysis
-- **Tools:** shell (nmap, nikto, sqlmap, ffuf, etc.), web-search (Serper, Google CSE)
+- **Tools:** shell (nmap, nikto, sqlmap, ffuf, etc.), web-search (Serper primary with Google CSE fallback)
 - **Delegated Tasks:** Security audits, vulnerability scanning, CVE research
 
 #### Builder
@@ -123,8 +123,7 @@ Context: 48% [████████████░░░░░░░░░░
 ### Web Search Tools
 | Tool | Backend |
 |------|---------|
-| `internet_search` | Serper API (serpapi.com) |
-| `web_search` | Google Custom Search Engine |
+| `internet_search` | Web search using Serper first, then Google CSE fallback |
 
 ---
 
