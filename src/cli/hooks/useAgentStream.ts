@@ -11,7 +11,6 @@ import { loadAgents } from "../../agents/loader.js";
 import type { FeedAction } from "../state/feedReducer.js";
 import {
   enqueueBtw,
-  executeWorkerPhase,
   finalizeTurn,
   prepareHarness,
   resolveHitlDecision,
@@ -154,30 +153,13 @@ export function useAgentStream({
           activeMode
         );
 
-        // Execute worker phase (parallel pre-processing)
-        const workerContext = activeMode === "plan"
-          ? ""
-          : await executeWorkerPhase(
-              prepared,
-              activeText,
-              provider,
-              resolvedModel,
-              dispatch,
-              turnId
-            );
-
-        // Inject worker results into runtime prompt
-        const enrichedPrompt = workerContext
-          ? `${prepared.runtimePrompt}\n\n${workerContext}`
-          : prepared.runtimePrompt;
-
         const pendingRun: PendingAgentRun = {
           messages: messagesRef.current,
           prepared,
           harnessRun,
           provider,
           modelName: resolvedModel,
-          runtimePrompt: enrichedPrompt,
+          runtimePrompt: prepared.runtimePrompt,
           parentTurnId: turnId,
           mode: activeMode,
           approvalPolicy: activeApprovalPolicy,
@@ -187,7 +169,7 @@ export function useAgentStream({
           messages: messagesRef.current,
           provider,
           modelName: resolvedModel,
-          runtimePrompt: enrichedPrompt,
+          runtimePrompt: prepared.runtimePrompt,
           dispatch,
           parentTurnId: turnId,
           mode: activeMode,

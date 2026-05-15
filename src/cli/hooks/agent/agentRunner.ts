@@ -11,8 +11,7 @@ import {
 import { allTools } from "../../../tools/index.js";
 import { filesystemTools } from "../../../tools/filesystem.js";
 import { createDelegateTool } from "../../../subagents/delegateTool.js";
-import { executeWorkers, formatWorkerResults } from "../../../harness/workerEngine.js";
-import { SYSTEM_PROMPT } from "../../../prompts/system.js";
+import { buildSystemPrompt } from "../../../prompts/system.js";
 import { countMessagesTokens } from "../../../context/tokenizer.js";
 import { createProvider, getDefaultProvider, getProviderModel, getContextWindow, type ChatMessage, type LLMProvider } from "../../../llm/index.js";
 import { getModeModelConfig } from "../../../settings/storage.js";
@@ -102,7 +101,7 @@ async function createRuntimeTools({
 }: Pick<AgentRunOptions, "provider" | "modelName" | "dispatch" | "parentTurnId" | "mode" | "approvalPolicy">): Promise<AgentTool[]> {
   const delegateTool = createDelegateTool({ provider, modelName, dispatch, parentTurnId });
   const mcpTools = await getMcpTools();
-  const buildTools = [...filesystemTools, ...allTools, ...mcpTools, ...(approvalPolicy === "full_auto" ? [delegateTool] : [])];
+  const buildTools = [...filesystemTools, ...allTools, ...mcpTools, delegateTool];
   return filterToolsForPolicy(buildTools, mode, approvalPolicy) as AgentTool[];
 }
 
@@ -119,23 +118,24 @@ export async function prepareHarness(
   provider: LLMProvider;
   modelName: string;
 }> {
-  const prepared = prepareTaskExecution({
-    text,
-    expandedText: text,
-    basePrompt: systemPromptOverride ?? SYSTEM_PROMPT,
-    messages,
-    mode,
-  });
-
-  // Check mode-specific provider/model config first
-  const modeConfig = getModeModelConfig(mode);
-  const effectiveProviderName = modeConfig?.provider ?? providerName;
-  const effectiveModelName = modeConfig?.model ?? modelName;
+  // Session overrides (from /provider or @agent) take priority over mode config.
+  // Only fall back to mode config when the caller supplies no explicit provider/model.
+  const modeConfig = (!providerName && !modelName) ? getModeModelConfig(mode) : null;
+  const effectiveProviderName = providerName ?? modeConfig?.provider;
+  const effectiveModelName = modelName ?? modeConfig?.model;
 
   const provider = effectiveProviderName
     ? createProvider(effectiveProviderName)
     : await getDefaultProvider();
   const resolvedModel = effectiveModelName ?? getProviderModel(provider.name);
+
+  const prepared = prepareTaskExecution({
+    text,
+    expandedText: text,
+    basePrompt: systemPromptOverride ?? buildSystemPrompt(provider.name, resolvedModel),
+    messages,
+    mode,
+  });
 
   recordTaskStarted(prepared);
   const harnessRun = createHarnessRunRecord({
@@ -300,7 +300,7 @@ export function finalizeTurn(
 
   sessionManager.onMessageAdded(messages);
 
-  const finalCount = countMessagesTokens(messages, SYSTEM_PROMPT);
+  const finalCount = countMessagesTokens(messages, buildSystemPrompt());
   onTokensUpdate(finalCount);
 
   dispatch({ type: "FINALIZE_TURN", completedAt: Date.now() });
@@ -308,24 +308,3 @@ export function finalizeTurn(
   return messages;
 }
 
-export async function executeWorkerPhase(
-  prepared: ReturnType<typeof prepareTaskExecution>,
-  taskText: string,
-  provider: ReturnType<typeof createProvider>,
-  model: string,
-  dispatch: Dispatch<FeedAction>,
-  parentTurnId: string
-): Promise<string> {
-  if (prepared.workerAssignments.length === 0) return "";
-
-  const workerResults = await executeWorkers({
-    assignments: prepared.workerAssignments,
-    taskText,
-    provider,
-    model,
-    dispatch,
-    parentTurnId,
-  });
-
-  return formatWorkerResults(workerResults);
-}

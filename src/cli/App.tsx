@@ -1,5 +1,5 @@
 import { useReducer, useState, useCallback, useEffect, useMemo, useRef } from "react";
-import { Box, useApp, useInput } from "ink";
+import { Box, useApp, useInput, useStdout } from "ink";
 import { globSync } from "glob";
 import * as fs from "fs";
 import * as path from "path";
@@ -90,6 +90,7 @@ function expandMentions(text: string, workspaceFiles: string[]): string {
 
 export function App() {
   const { exit }              = useApp();
+  const { stdout }            = useStdout();
   const [feedState, dispatch] = useReducer(feedReducer, initialFeedState);
   const [tokens, setTokens]   = useState(0);
   const [inputValue, setInputValue] = useState("");
@@ -316,18 +317,22 @@ export function App() {
 
   useEffect(() => { tokensRef.current = tokens; }, [tokens]);
 
+  const modeInitialized = useRef(false);
   // Auto-switch to mode-specific model when execution mode changes
   useEffect(() => {
     const modeConfig = loadSettings().llm?.modes?.[executionMode];
     if (modeConfig) {
       setSessionProvider(modeConfig.provider);
       setSessionModel(modeConfig.model);
-      dispatch({
-        type: "APPEND_SYSTEM",
-        id: `mode-model-${Date.now()}`,
-        text: `${executionMode.toUpperCase()} mode → ${modeConfig.provider}:${modeConfig.model}`,
-      });
+      if (modeInitialized.current) {
+        dispatch({
+          type: "APPEND_SYSTEM",
+          id: `mode-model-${Date.now()}`,
+          text: `${executionMode.toUpperCase()} mode → ${modeConfig.provider}:${modeConfig.model}`,
+        });
+      }
     }
+    modeInitialized.current = true;
   }, [executionMode]);
 
   const displayLabel = useMemo(() => {
@@ -1050,7 +1055,7 @@ export function App() {
     const session = feedState.sessions[sessionViewId];
     if (session) {
       return (
-        <Box flexDirection="column" height="100%">
+        <Box flexDirection="column" height={stdout.rows}>
           <SessionView session={session} onBack={() => setSessionViewId(null)} />
           <StatusBar
             modelLabel={displayLabel}
@@ -1067,7 +1072,7 @@ export function App() {
 
   if (agentCreatorOpen) {
     return (
-      <Box flexDirection="column" height="100%">
+      <Box flexDirection="column" height={stdout.rows}>
         <AgentCreator
           onDone={(msg) => {
             setAgentCreatorOpen(false);
@@ -1088,7 +1093,7 @@ export function App() {
 
   if (agentEditorTarget) {
     return (
-      <Box flexDirection="column" height="100%">
+      <Box flexDirection="column" height={stdout.rows}>
         <AgentCreator
           initialAgent={agentEditorTarget}
           onDone={(msg) => {
@@ -1110,7 +1115,7 @@ export function App() {
 
   if (agentViewerTarget) {
     return (
-      <Box flexDirection="column" height="100%">
+      <Box flexDirection="column" height={stdout.rows}>
         <AgentViewer agent={agentViewerTarget} onBack={() => setAgentViewerTarget(null)} />
         <StatusBar
           modelLabel={displayLabel}
@@ -1176,7 +1181,7 @@ export function App() {
   }
 
   return (
-    <Box flexDirection="column" height="100%">
+    <Box flexDirection="column" height={stdout.rows}>
       {feedState.entries.length === 0 ? (
         <WelcomeScreen
           modelLabel={displayLabel}

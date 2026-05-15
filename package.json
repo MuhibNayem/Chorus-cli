@@ -1,6 +1,6 @@
 {
-  "name": "Chorus",
-  "version": "0.1.4",
+  "name": "chorus-agent-cli",
+  "version": "0.1.6",
   "description": "A high-performance, local-first interactive agent harness for production coding tasks. Multi-agent orchestration with Ollama, OpenAI, DeepSeek, and more.",
   "type": "module",
   "main": "dist/index.js",

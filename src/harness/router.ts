@@ -10,7 +10,7 @@ const RESEARCH_HINT_RE =
 const BACKGROUND_HINT_RE =
   /\b(full project|full codebase|entire repo|nightly|batch|audit all|index all)\b/i;
 const MULTI_FILE_HINT_RE =
-  /\b(and|also|plus|across|multiple|several)\b/i;
+  /\b(also|plus|across|multiple|several)\b/i;
 const EXPLICIT_ORCHESTRATION_RE =
   /\b(orchestrate|coordinate|multi-agent|delegate|workers?|subagents?|parallelize)\b/i;
 const COMPLEX_SINGLE_WORK_RE =
@@ -37,12 +37,16 @@ function selectLane(text: string): ExecutionLane {
   return "foreground_sync";
 }
 
+function isSimpleConversational(text: string): boolean {
+  if (text.length > 120) return false;
+  return !EDIT_HINT_RE.test(text) && !COMPLEX_SINGLE_WORK_RE.test(text) && !BACKGROUND_HINT_RE.test(text);
+}
+
 function selectPath(text: string, expandedText: string): TaskPath {
   if (BACKGROUND_HINT_RE.test(text)) return "background_or_batch_path";
   if (RESEARCH_HINT_RE.test(text)) return "research_then_plan_path";
-  if (isMultiFileWork(text, expandedText)) {
-    return "parallel_multi_worker_path";
-  }
+  if (isSimpleConversational(text)) return "direct_agent_path";
+  if (isMultiFileWork(text, expandedText)) return "parallel_multi_worker_path";
   if (!isComplexSingleWorkerWork(text)) return "direct_agent_path";
   return "tool_or_single_worker_path";
 }

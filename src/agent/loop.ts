@@ -53,16 +53,20 @@ function toolDefsFromTools(tools: AgentTool[]): ToolDef[] {
 }
 
 function zodToJsonSchema(schema: unknown): Record<string, unknown> {
+  if (schema instanceof z.ZodType) {
+    return normalizeZodSchema(schema);
+  }
   if (schema && typeof schema === "object" && !Array.isArray(schema)) {
     const maybeSchema = schema as Record<string, unknown>;
-    if (typeof maybeSchema.type === "string" || maybeSchema.properties || maybeSchema.required) {
+    if (
+      typeof maybeSchema.type === "string" ||
+      (maybeSchema.properties !== null && typeof maybeSchema.properties === "object" && !Array.isArray(maybeSchema.properties)) ||
+      Array.isArray(maybeSchema.required)
+    ) {
       return maybeSchema;
     }
   }
-  if (!(schema instanceof z.ZodType)) {
-    return { type: "object", properties: {}, additionalProperties: true };
-  }
-  return normalizeZodSchema(schema);
+  return { type: "object", properties: {}, additionalProperties: true };
 }
 
 function normalizeZodSchema(schema: z.ZodTypeAny): Record<string, unknown> {

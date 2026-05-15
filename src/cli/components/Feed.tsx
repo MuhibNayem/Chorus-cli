@@ -72,7 +72,7 @@ export function Feed({
   const dynamicEntries = lastTurnIndex >= 0 ? entries.slice(lastTurnIndex) : entries;
 
   return (
-    <Box flexDirection="column" flexGrow={1} overflow="hidden">
+    <Box flexDirection="column" flexGrow={1} overflow="hidden" justifyContent="flex-end">
       {/* Entries before the last live entry — rendered once and frozen */}
       {staticEntries.length > 0 && (
         <Static items={staticEntries}>
