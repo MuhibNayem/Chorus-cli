@@ -31,6 +31,8 @@ import { AgentCreator } from "./components/AgentCreator.js";
 import { AgentViewer } from "./components/AgentViewer.js";
 import { ApprovalCard } from "./components/ApprovalCard.js";
 import { McpServerWizard } from "./components/McpServerWizard.js";
+import { McpDashboard } from "./components/McpDashboard.js";
+import { AgentDashboard } from "./components/AgentDashboard.js";
 import { runSwarm } from "../swarm/orchestrator.js";
 import { buildPresetSwarm } from "../swarm/presets/index.js";
 import { createProvider } from "../llm/registry.js";
@@ -206,6 +208,9 @@ export function App() {
   const [selectionIndex, setSelectionIndex] = useState(0);
   const [sessionViewId, setSessionViewId] = useState<string | null>(null);
   const [mcpWizardOpen, setMcpWizardOpen] = useState(false);
+  const [mcpDashboardOpen, setMcpDashboardOpen] = useState(false);
+  const [agentDashboardOpen, setAgentDashboardOpen] = useState(false);
+  const [agentAiMode, setAgentAiMode] = useState(false);
 
   const showModelSelectForProvider = useCallback((provider: string) => {
     const ps = loadSettings().llm?.providers?.[provider] ?? {};
@@ -335,60 +340,8 @@ export function App() {
   }, [dispatch]);
 
   const showAgents = useCallback(() => {
-    const agents = loadAgents();
-    const items = [
-      ...agents.map((a) => ({
-        value: `agent:${a.name}`,
-        label: `${a.source === "project" ? "⊙" : "✎"} ${a.name.padEnd(20)}  ${a.description.slice(0, 40)}`,
-      })),
-      { value: "new", label: "＋ Create new agent" },
-    ];
-    setSelectionMode({
-      title: "Agents",
-      items,
-      onSelect: (value) => {
-        setSelectionMode(null);
-        if (value === "new") {
-          setAgentCreatorOpen(true);
-          return;
-        }
-        // Show agent actions
-        const agentName = value.replace(/^agent:/, "");
-        const agent = loadAgents().find((a) => a.name === agentName);
-        if (!agent) return;
-        const actionItems = [
-          { value: "view", label: `View agent "${agent.name}"` },
-          { value: "edit", label: `Edit agent "${agent.name}"` },
-          { value: "use", label: `Use @${agent.name} by prefixing messages` },
-          { value: "delete", label: `Delete agent "${agent.name}"` },
-          { value: "cancel", label: "Cancel" },
-        ];
-        setSelectionMode({
-          title: `Agent: ${agent.name}`,
-          items: actionItems,
-          onSelect: (action) => {
-            setSelectionMode(null);
-            if (action === "view") {
-              setAgentViewerTarget(agent);
-            } else if (action === "edit") {
-              setAgentEditorTarget(agent);
-            } else if (action === "delete") {
-              try {
-                deleteAgent(agent.filePath);
-                dispatch({ type: "APPEND_SYSTEM", id: `sys-${Date.now()}`, text: `Deleted agent "${agent.name}".` });
-              } catch (err) {
-                dispatch({ type: "APPEND_SYSTEM", id: `sys-${Date.now()}`, text: `Failed to delete: ${err instanceof Error ? err.message : String(err)}` });
-              }
-            } else if (action === "use") {
-              dispatch({ type: "APPEND_SYSTEM", id: `sys-${Date.now()}`, text: `To use this agent, prefix your message with @${agent.name}` });
-            }
-          },
-        });
-        setSelectionIndex(0);
-      },
-    });
-    setSelectionIndex(0);
-  }, [dispatch]);
+    setAgentDashboardOpen(true);
+  }, []);
 
   const contextWindow = useMemo(() => {
     const provider = sessionProvider ?? modelLabel.split(":")[0] ?? "deepseek";
@@ -493,10 +446,21 @@ export function App() {
     const atMatch = inputValue.match(/@([\w./\\-]*)$/);
     if (!atMatch) return [];
     const partial = atMatch[1].toLowerCase();
-    return workspaceFiles.current
+
+    const allAgents = loadAgents();
+    const matchingAgents = allAgents
+      .filter((a) => a.name.toLowerCase().startsWith(partial))
+      .map((a) => ({
+        label: a.name,
+        description: `agent — ${a.description || "custom agent"}`,
+      }));
+
+    const files = workspaceFiles.current
       .filter((f) => f.toLowerCase().includes(partial))
-      .slice(0, 8)
+      .slice(0, partial.length === 0 ? 3 : 6)
       .map((f) => ({ label: f }));
+
+    return [...matchingAgents, ...files].slice(0, 12);
   }, [inputValue]);
 
   const activeSuggestions =
@@ -519,21 +483,27 @@ export function App() {
     approvalPolicy,
   });
 
+  // Use refs to avoid stale closures in the global input handler
+  const pendingApprovalRef = useRef(pendingApproval);
+  const respondToApprovalRef = useRef(respondToApproval);
+  pendingApprovalRef.current = pendingApproval;
+  respondToApprovalRef.current = respondToApproval;
+
   useInput((_input, key) => {
     if (key.ctrl && _input === "c") exit();
 
-    if (pendingApproval) {
+    if (pendingApprovalRef.current) {
       const input = _input.toLowerCase();
       if (input === "a") {
-        void respondToApproval("approve");
+        void respondToApprovalRef.current("approve");
         return;
       }
       if (input === "s") {
-        void respondToApproval("approve_session");
+        void respondToApprovalRef.current("approve_session");
         return;
       }
       if (input === "d" || key.escape) {
-        void respondToApproval("deny");
+        void respondToApprovalRef.current("deny");
         return;
       }
       return;
@@ -615,6 +585,11 @@ export function App() {
     }
 
     if (key.tab) {
+      // Tab on empty input = cycle focus, not autocomplete
+      if (inputValue === "" && expandableIds.length > 0) {
+        setNavFocusIndex((i) => (i + 1) % expandableIds.length);
+        return;
+      }
       if (activeSuggestions.length > 0) {
         const selected = activeSuggestions[suggestionIndex < 0 ? 0 : suggestionIndex];
         if (slashSuggestions.length > 0) {
@@ -652,6 +627,7 @@ export function App() {
 
   function handleInputChange(val: string) {
     if (val.includes("\t")) return;
+    // Space on empty input with a focused item = toggle expand, not typing
     if (val === " " && inputValue === "" && focusedId !== null) return;
 
     const delta = val.length - prevLenRef.current;
@@ -1068,6 +1044,7 @@ export function App() {
         submitBtw,
         showApiKeysConfig: () => setShowingApiKeysConfig(true),
         showMcpAddWizard: () => setMcpWizardOpen(true),
+          showMcpDashboard: () => setMcpDashboardOpen(true),
         runSwarmPreset,
         stopSwarm,
         listSwarmTraces,
@@ -1165,7 +1142,7 @@ export function App() {
     if (session) {
       return (
         <Box flexDirection="column">
-          <SessionView session={session} onBack={() => setSessionViewId(null)} />
+          <Box flexGrow={1}><SessionView session={session} onBack={() => setSessionViewId(null)} /></Box>
           <StatusBar
             modelLabel={displayLabel}
             tokens={tokens}
@@ -1179,16 +1156,60 @@ export function App() {
     setSessionViewId(null);
   }
 
+  if (agentDashboardOpen) {
+    return (
+      <Box flexDirection="column">
+        <Box flexGrow={1}>
+        <AgentDashboard
+          onDone={(msg) => {
+            setAgentDashboardOpen(false);
+            if (msg) dispatch({ type: "APPEND_SYSTEM", id: `sys-${Date.now()}`, text: msg });
+          }}
+          onCancel={() => setAgentDashboardOpen(false)}
+          onCreateNew={(mode) => {
+            setAgentDashboardOpen(false);
+            setAgentAiMode(mode === "ai");
+            setAgentCreatorOpen(true);
+          }}
+          onEdit={(agent) => {
+            setAgentDashboardOpen(false);
+            setAgentEditorTarget(agent);
+          }}
+          onView={(agent) => {
+            setAgentDashboardOpen(false);
+            setAgentViewerTarget(agent);
+          }}
+          onUse={(agent) => {
+            setAgentDashboardOpen(false);
+            dispatch({ type: "APPEND_SYSTEM", id: `sys-${Date.now()}`, text: `Type @${agent.name} followed by your task to invoke this agent.` });
+          }}
+        />
+        </Box>
+        <StatusBar
+          modelLabel={displayLabel}
+          tokens={tokens}
+          agentState="idle"
+          sessionName={sessionManager.getCurrent()?.name}
+          maxTokens={contextWindow}
+        />
+      </Box>
+    );
+  }
+
   if (agentCreatorOpen) {
     return (
       <Box flexDirection="column">
+        <Box flexGrow={1}>
         <AgentCreator
+          aiMode={agentAiMode}
           onDone={(msg) => {
             setAgentCreatorOpen(false);
+            setAgentAiMode(false);
             dispatch({ type: "APPEND_SYSTEM", id: `sys-${Date.now()}`, text: msg });
           }}
-          onCancel={() => setAgentCreatorOpen(false)}
+          onCancel={() => { setAgentCreatorOpen(false); setAgentAiMode(false); }}
         />
+        </Box>
         <StatusBar
           modelLabel={displayLabel}
           tokens={tokens}
@@ -1203,6 +1224,7 @@ export function App() {
   if (agentEditorTarget) {
     return (
       <Box flexDirection="column">
+        <Box flexGrow={1}>
         <AgentCreator
           initialAgent={agentEditorTarget}
           onDone={(msg) => {
@@ -1211,6 +1233,7 @@ export function App() {
           }}
           onCancel={() => setAgentEditorTarget(null)}
         />
+        </Box>
         <StatusBar
           modelLabel={displayLabel}
           tokens={tokens}
@@ -1225,7 +1248,45 @@ export function App() {
   if (agentViewerTarget) {
     return (
       <Box flexDirection="column">
-        <AgentViewer agent={agentViewerTarget} onBack={() => setAgentViewerTarget(null)} />
+        <Box flexGrow={1}><AgentViewer agent={agentViewerTarget} onBack={() => setAgentViewerTarget(null)} /></Box>
+        <StatusBar
+          modelLabel={displayLabel}
+          tokens={tokens}
+          agentState="idle"
+          sessionName={sessionManager.getCurrent()?.name}
+          maxTokens={contextWindow}
+        />
+      </Box>
+    );
+  }
+
+  if (mcpDashboardOpen) {
+    return (
+      <Box flexDirection="column">
+        <Box flexGrow={1}>
+        <McpDashboard
+          onDone={(msg) => {
+            setMcpDashboardOpen(false);
+            if (msg) dispatch({ type: "APPEND_SYSTEM", id: `sys-${Date.now()}`, text: msg });
+          }}
+          onCancel={() => setMcpDashboardOpen(false)}
+          onAuth={(serverName) => {
+            setMcpDashboardOpen(false);
+            void (async () => {
+              try {
+                const { loadMcpServers } = await import("../mcp/config.js");
+                const { runOAuthFlow } = await import("../mcp/auth.js");
+                const configs = loadMcpServers();
+                const config = configs.find((c) => c.name === serverName);
+                if (config) await runOAuthFlow(config);
+                dispatch({ type: "APPEND_SYSTEM", id: `sys-${Date.now()}`, text: `OAuth authorized for "${serverName}". Run /mcp to reconnect.` });
+              } catch (e) {
+                dispatch({ type: "APPEND_SYSTEM", id: `sys-${Date.now()}`, text: `OAuth failed: ${e instanceof Error ? e.message : String(e)}` });
+              }
+            })();
+          }}
+        />
+        </Box>
         <StatusBar
           modelLabel={displayLabel}
           tokens={tokens}
@@ -1240,6 +1301,7 @@ export function App() {
   if (mcpWizardOpen) {
     return (
       <Box flexDirection="column">
+        <Box flexGrow={1}>
         <McpServerWizard
           onDone={(msg) => {
             setMcpWizardOpen(false);
@@ -1247,6 +1309,7 @@ export function App() {
           }}
           onCancel={() => setMcpWizardOpen(false)}
         />
+        </Box>
         <StatusBar
           modelLabel={displayLabel}
           tokens={tokens}

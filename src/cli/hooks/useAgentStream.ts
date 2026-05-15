@@ -83,6 +83,7 @@ export function useAgentStream({
   const approvalPolicyRef = useRef<ApprovalPolicy>(approvalPolicy);
   const pendingRunRef = useRef<PendingAgentRun | null>(null);
   const activeRunRef = useRef<ActiveAgentRun | null>(null);
+  const submittingRef = useRef(false);
   const [pendingApproval, setPendingApproval] = useState<PendingApproval | null>(null);
 
   useEffect(() => {
@@ -101,6 +102,8 @@ export function useAgentStream({
 
   const submit = useCallback(
     async (text: string) => {
+      if (submittingRef.current) return;
+      submittingRef.current = true;
       dbg("SUBMIT", { text: text.slice(0, 80) });
       const turnStartedAt = Date.now();
       const turnId = `turn-${Date.now()}`;
@@ -193,6 +196,7 @@ export function useAgentStream({
         );
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
+        const stack = err instanceof Error ? err.stack : undefined;
         dbg("ERROR", {
           message: errMsg,
           stack: err instanceof Error ? err.stack : undefined,
@@ -200,8 +204,10 @@ export function useAgentStream({
         dispatch({
           type: "SET_ERROR",
           id: `error-${Date.now()}`,
-          message: errMsg,
+          message: `${errMsg}${stack ? `\n\n${stack}` : ""}`,
         });
+      } finally {
+        submittingRef.current = false;
       }
     },
     [dispatch, onTokensUpdate]
@@ -258,6 +264,7 @@ export function useAgentStream({
         );
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
+        const stack = err instanceof Error ? err.stack : undefined;
         dbg("APPROVAL_RESUME_ERROR", {
           message: errMsg,
           stack: err instanceof Error ? err.stack : undefined,
@@ -265,7 +272,7 @@ export function useAgentStream({
         dispatch({
           type: "SET_ERROR",
           id: `error-${Date.now()}`,
-          message: errMsg,
+          message: `${errMsg}${stack ? `\n\n${stack}` : ""}`,
         });
       }
     },

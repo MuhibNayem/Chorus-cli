@@ -2,6 +2,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { createHash } from "crypto";
 import { loadSettings, type McpServerSettings } from "../settings/storage.js";
+import dotenv from "dotenv";
 
 export type McpServerConfig = McpServerSettings & {
   name: string;
@@ -104,16 +105,31 @@ function expandHeadersHelper(server: McpServerSettings): McpServerSettings["head
   };
 }
 
+function loadEnvFile(envFilePath: string | undefined): Record<string, string> {
+  if (!envFilePath) return {};
+  const resolved = expandEnv(envFilePath);
+  const result = dotenv.config({ path: resolved });
+  if (result.error) {
+    if ((result.error as NodeJS.ErrnoException).code === "ENOENT") return {};
+    throw result.error;
+  }
+  return (result.parsed ?? {}) as Record<string, string>;
+}
+
 function normalizeServer(server: McpServerSettings): McpServerSettings {
+  const envFileVars = loadEnvFile(server.envFile);
+  const mergedEnv = { ...envFileVars, ...expandRecord(server.env) };
+
   return {
     ...server,
     command: server.command ? expandEnv(server.command) : undefined,
     args: server.args?.map(expandEnv),
-    env: expandRecord(server.env),
+    env: mergedEnv,
     cwd: server.cwd ? expandEnv(server.cwd) : undefined,
     url: server.url ? expandEnv(server.url) : undefined,
     headers: expandRecord(server.headers),
     headersHelper: expandHeadersHelper(server),
+    envFile: server.envFile ? expandEnv(server.envFile) : undefined,
   };
 }
 
@@ -146,9 +162,10 @@ function isValidServer(name: string, server: McpServerSettings): boolean {
   if (server.auth) {
     if (typeof server.auth !== "object" || Array.isArray(server.auth)) return false;
     const authType = server.auth.type ?? "none";
-    if (!["none", "bearer", "client_credentials"].includes(authType)) return false;
-    if (authType === "bearer" && !server.auth.tokenEnv) return false;
+    if (!["none", "bearer", "client_credentials", "authorization_code", "aws_sigv4"].includes(authType)) return false;
+    if (authType === "bearer" && !server.auth.tokenEnv && !server.bearerTokenEnv) return false;
     if (authType === "client_credentials" && (!server.auth.clientIdEnv || !server.auth.clientSecretEnv)) return false;
+    if (authType === "authorization_code" && !server.auth.clientIdEnv) return false;
   }
   return true;
 }

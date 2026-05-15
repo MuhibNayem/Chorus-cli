@@ -70,8 +70,15 @@ export class SkillMiddleware implements AgentMiddleware {
   // ─── extraTools ─────────────────────────────────────────────────────────────
 
   extraTools(): AgentTool[] {
-    const patterns = this.harness.getPatternsForTurn();
-    return patterns.map((pattern) => patternToTool(pattern, this.toolsByName));
+    try {
+      const patterns = this.harness.getPatternsForTurn();
+      return patterns
+        .filter((p) => Array.isArray(p.parameters) && p.parameters.length > 0)
+        .map((pattern) => patternToTool(pattern, this.toolsByName));
+    } catch (error) {
+      console.error(`[SkillMiddleware] extraTools error: ${error instanceof Error ? error.message : String(error)}`);
+      return [];
+    }
   }
 
   setTools(toolsByName: Map<string, AgentTool>): void {
@@ -137,8 +144,9 @@ function patternToTool(pattern: PatternDef, toolsByName: Map<string, AgentTool>)
 function buildPatternSchema(pattern: PatternDef): Record<string, unknown> {
   const properties: Record<string, unknown> = {};
   const required: string[] = [];
+  const params = Array.isArray(pattern.parameters) ? pattern.parameters : [];
 
-  for (const param of pattern.parameters) {
+  for (const param of params) {
     properties[param.name] = {
       type: param.type,
       description: param.description,

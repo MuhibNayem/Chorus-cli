@@ -23,18 +23,19 @@ function isStaticEntry(entry: FeedEntry): boolean {
   return false;
 }
 
-function StaticItem({ entry, onToggle, onToggleSwarmAgent }: {
+function StaticItem({ entry, onToggle, onToggleSwarmAgent, focusedId }: {
   entry: FeedEntry;
   onToggle: (id: string) => void;
   onToggleSwarmAgent: (swarmId: string, sectionId: string) => void;
+  focusedId?: string | null;
 }) {
   switch (entry.kind) {
     case "user":
       return <UserMessage text={entry.text} />;
     case "turn":
-      return <AgentTurn entry={entry} onToggle={onToggle} />;
+      return <AgentTurn entry={entry} onToggle={onToggle} focusedId={focusedId ?? null} />;
     case "swarm-turn":
-      return <SwarmTurnCard entry={entry} onToggleAgent={onToggleSwarmAgent} />;
+      return <SwarmTurnCard entry={entry} onToggleAgent={onToggleSwarmAgent} focusedSectionId={focusedId ?? null} />;
     case "error":
       return (
         <Box marginBottom={1}>
@@ -72,9 +73,10 @@ export function Feed({
         entry={entry}
         onToggle={onToggle}
         onToggleSwarmAgent={onToggleSwarmAgent}
+        focusedId={focusedId}
       />
     ),
-    [onToggle, onToggleSwarmAgent],
+    [onToggle, onToggleSwarmAgent, focusedId],
   );
 
   return (

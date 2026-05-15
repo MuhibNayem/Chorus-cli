@@ -174,12 +174,13 @@ export async function processAgentStream(
   } catch (error) {
     hadError = true;
     const message = error instanceof Error ? error.message : String(error);
+    const stack = error instanceof Error ? error.stack : undefined;
     dispatch({
       type: "APPEND_SYSTEM",
       id: `stream-error-${Date.now()}`,
-      text: `Stream interrupted: ${message}`,
+      text: `Stream interrupted: ${message}${stack ? `\n\n${stack}` : ""}`,
     });
-    dbg("STREAM_ERROR", { message });
+    dbg("STREAM_ERROR", { message, stack });
   }
 
   for (const toolId of openTools) {

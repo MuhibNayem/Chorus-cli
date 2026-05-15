@@ -76,13 +76,17 @@ export function routeTask(input: RouteTaskInput): TaskRoute {
   };
 }
 
-export function buildVerificationCriteria(route: TaskRoute, mode: ExecutionMode = "build"): VerificationCriterion[] {
+export function buildVerificationCriteria(route: TaskRoute, mode: ExecutionMode = "build", isAgentInvocation = false): VerificationCriterion[] {
   const criteria: VerificationCriterion[] = [
     {
       id: "non-empty-response",
       description: "Return a non-empty assistant response or a concrete failure explanation.",
     },
   ];
+
+  // Agent-invoked tasks have their own system prompt; diff/verification criteria
+  // don't apply because the task description is the agent's role, not a code-edit command.
+  if (isAgentInvocation) return criteria;
 
   if (mode === "plan") {
     criteria.push({

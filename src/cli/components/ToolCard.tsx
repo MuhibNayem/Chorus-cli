@@ -54,7 +54,8 @@ export function ToolCard({ card, focused }: ToolCardProps) {
   const spinner  = useSpinner(card.status === "running");
   const color    = STATUS_COLOR[card.status] as any;
   const isRunning = card.status === "running";
-  const hint     = focused ? "  {Space}" : "";
+  const hint      = focused ? "  {Space}" : "  Space";
+  const focus     = focused ? "▶ " : "  ";
 
   const icon = isRunning ? spinner : card.status === "done" ? "✓" : "✗";
 
@@ -64,6 +65,7 @@ export function ToolCard({ card, focused }: ToolCardProps) {
     return (
       <Box marginLeft={2} marginBottom={0} flexDirection="column">
         <Box flexDirection="row">
+          <Text color={color}>{focus}</Text>
           <Text color={color}>{icon} </Text>
           <Text bold>{card.name}</Text>
           {!isTodo && <Text color="grey">{"("}{truncateArgs(card.args)}{")"}</Text>}
@@ -82,6 +84,7 @@ export function ToolCard({ card, focused }: ToolCardProps) {
   return (
     <Box marginLeft={2} flexDirection="column" marginBottom={1}>
       <Box flexDirection="row">
+        <Text color={color}>{focus}</Text>
         <Text color={color}>{icon} </Text>
         <Text bold>{card.name}</Text>
         <Text color={focused ? "cyan" : "grey"}>{`  [collapse${hint}]`}</Text>

@@ -145,4 +145,94 @@ describe("MCP config loading", () => {
     cleanup(home);
     cleanup(project);
   });
+
+  it("validates authorization_code auth type", () => {
+    const home = tmpDir();
+    const project = tmpDir();
+    process.env.CHORUS_HOME_DIR = home;
+    process.env.OAUTH_CLIENT_ID = "test-client";
+    clearSettingsCache();
+
+    fs.writeFileSync(path.join(project, ".mcp.json"), JSON.stringify({
+      mcpServers: {
+        linear: {
+          type: "http",
+          url: "https://mcp.linear.app/mcp",
+          auth: {
+            type: "authorization_code",
+            clientIdEnv: "OAUTH_CLIENT_ID",
+            authorizationUrl: "https://linear.app/oauth/authorize",
+            tokenUrl: "https://linear.app/oauth/token",
+            scope: "read write",
+          },
+        },
+      },
+    }), "utf-8");
+    trustProjectMcpConfig(project);
+
+    const servers = loadMcpServers(project);
+    expect(servers).toHaveLength(1);
+    expect(servers[0].auth?.type).toBe("authorization_code");
+    expect(servers[0].auth?.clientIdEnv).toBe("OAUTH_CLIENT_ID");
+
+    cleanup(home);
+    cleanup(project);
+  });
+
+  it("loads envFile for stdio servers", () => {
+    const home = tmpDir();
+    const project = tmpDir();
+    process.env.CHORUS_HOME_DIR = home;
+    clearSettingsCache();
+
+    const envPath = path.join(project, ".mcp.env");
+    fs.writeFileSync(envPath, "MCP_SECRET=from-env-file\nMCP_REGION=us-east-1\n", "utf-8");
+
+    fs.writeFileSync(path.join(project, ".mcp.json"), JSON.stringify({
+      mcpServers: {
+        custom: {
+          type: "stdio",
+          command: "node",
+          args: ["server.js"],
+          envFile: envPath,
+          env: { EXTRA_KEY: "extra-value" },
+        },
+      },
+    }), "utf-8");
+    trustProjectMcpConfig(project);
+
+    const servers = loadMcpServers(project);
+    expect(servers).toHaveLength(1);
+    expect(servers[0].env).toEqual({
+      MCP_SECRET: "from-env-file",
+      MCP_REGION: "us-east-1",
+      EXTRA_KEY: "extra-value",
+    });
+
+    cleanup(home);
+    cleanup(project);
+  });
+
+  it("rejects unknown auth types", () => {
+    const home = tmpDir();
+    const project = tmpDir();
+    process.env.CHORUS_HOME_DIR = home;
+    clearSettingsCache();
+
+    fs.writeFileSync(path.join(project, ".mcp.json"), JSON.stringify({
+      mcpServers: {
+        bad: {
+          type: "http",
+          url: "https://example.com/mcp",
+          auth: { type: "password" as never, tokenEnv: "X" },
+        },
+      },
+    }), "utf-8");
+    trustProjectMcpConfig(project);
+
+    expect(loadMcpServers(project)).toEqual([]);
+
+    cleanup(home);
+    cleanup(project);
+  });
 });

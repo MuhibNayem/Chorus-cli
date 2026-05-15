@@ -14,6 +14,8 @@ import * as os from "os";
 import type {
   SkillDef,
   PatternDef,
+  PatternParameter,
+  SkillWorkflowStep,
   SkillMatch,
   SkillMetrics,
   ToolTrajectory,
@@ -25,6 +27,32 @@ import { loadSkillsFromDirs, saveSkillFile } from "./loader.js";
 
 function chorusHome(): string {
   return process.env.CHORUS_HOME_DIR ?? path.join(os.homedir(), ".chorus");
+}
+
+/** Reconstruct a PatternDef from a saved SkillDef that was originally a synthesized pattern. */
+function reconstructPatternFromSkill(skill: SkillDef): PatternDef | null {
+  if (!skill.synthesized) return null;
+
+  const params: PatternParameter[] = [];
+  const paramRegex = /^- (\w+):\s*(\w+)\s*—\s*(.+)$/gm;
+
+  let match: RegExpExecArray | null;
+  while ((match = paramRegex.exec(skill.instructions)) !== null) {
+    const [, name, type, description] = match;
+    const validType = (["string", "number", "boolean", "array"] as const).find((t) => t === type) ?? "string";
+    params.push({ name, type: validType, description: description.trim() });
+  }
+
+  return {
+    name: skill.name,
+    description: skill.description,
+    parameters: params,
+    workflow: skill.workflow ?? [],
+    estimatedTokens: skill.costBudget ?? 500,
+    evidenceCount: skill.sourceTrajectories?.length ?? 0,
+    sourceTrajectories: skill.sourceTrajectories ?? [],
+    synthesizedAt: skill.updatedAt ?? Date.now(),
+  };
 }
 
 export class SkillRegistry {
@@ -64,6 +92,16 @@ export class SkillRegistry {
 
   /** Register an auto-synthesized pattern. */
   async registerPattern(pattern: PatternDef): Promise<void> {
+    if (!Array.isArray(pattern.parameters)) {
+      console.error(`[SkillRegistry] Pattern "${pattern.name}" has no parameters array — fixing.`);
+      (pattern as { parameters: PatternParameter[] }).parameters = [];
+    }
+    if (!Array.isArray(pattern.workflow)) {
+      (pattern as { workflow: SkillWorkflowStep[] }).workflow = [];
+    }
+    if (!Array.isArray(pattern.sourceTrajectories)) {
+      (pattern as { sourceTrajectories: string[] }).sourceTrajectories = [];
+    }
     this.patterns.set(pattern.name, pattern);
     await this.ready;
     await this.index.indexSkill(pattern, "pattern");
@@ -84,14 +122,27 @@ export class SkillRegistry {
   }
 
   private async performReload(): Promise<void> {
-    // Clear existing skills (but keep patterns)
+    // Clear all existing entries from index
     for (const name of this.skills.keys()) {
       this.index.remove(name);
     }
+    for (const name of this.patterns.keys()) {
+      this.index.remove(name);
+    }
     this.skills.clear();
+    this.patterns.clear();
 
     const loaded = loadSkillsFromDirs(this.skillDirs);
     for (const skill of loaded) {
+      if (skill.synthesized) {
+        // Reconstruct PatternDef from saved SkillDef
+        const pattern = reconstructPatternFromSkill(skill);
+        if (pattern) {
+          this.patterns.set(pattern.name, pattern);
+          await this.index.indexSkill(pattern, "pattern");
+          continue;
+        }
+      }
       this.skills.set(skill.name, skill);
       await this.index.indexSkill(skill, "skill");
     }
@@ -132,17 +183,18 @@ export class SkillRegistry {
     await this.ready;
     const results = await this.index.search(query, topK, minScore);
 
-    // Resolve names to actual skill/pattern objects
     return results
       .map((r) => {
         const skill = this.skills.get(r.skill.name);
         const pattern = this.patterns.get(r.skill.name);
         const resolved = skill ?? pattern;
         if (!resolved) return null;
+        // Never return a SkillDef as a "pattern" kind — it must be a real PatternDef
+        if (r.kind === "pattern" && !pattern) return null;
         return {
           skill: resolved,
           score: r.score,
-          kind: r.kind,
+          kind: pattern ? "pattern" : "skill",
         };
       })
       .filter((r): r is SkillMatch => r !== null);
@@ -249,7 +301,7 @@ export class SkillRegistry {
     const skillDef: SkillDef = {
       name: pattern.name,
       description: pattern.description,
-      instructions: `Auto-synthesized pattern from ${pattern.evidenceCount} trajectories.\n\nParameters:\n${pattern.parameters.map((p) => `- ${p.name}: ${p.type} — ${p.description}`).join("\n")}`,
+      instructions: `Auto-synthesized pattern from ${pattern.evidenceCount} trajectories.\n\nParameters:\n${(pattern.parameters ?? []).map((p) => `- ${p.name}: ${p.type} — ${p.description}`).join("\n")}`,
       workflow: pattern.workflow,
       synthesized: true,
       sourceTrajectories: pattern.sourceTrajectories,

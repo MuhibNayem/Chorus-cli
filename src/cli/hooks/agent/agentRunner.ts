@@ -135,6 +135,7 @@ export async function prepareHarness(
     basePrompt: systemPromptOverride ?? buildSystemPrompt(provider.name, resolvedModel),
     messages,
     mode,
+    isAgentInvocation: !!systemPromptOverride,
   });
 
   recordTaskStarted(prepared);
@@ -293,8 +294,8 @@ export function finalizeTurn(
   if (!completion.verification.ok) {
     dispatch({
       type: "APPEND_SYSTEM",
-      id: `verify-${Date.now()}`,
-      text: `Verifier flagged: ${completion.verification.findings.join(" ")}`,
+      id: `verify-${prepared.task.taskId}`,
+      text: `Verifier flagged: ${completion.verification.findings.join("\n")}`,
     });
   }
 

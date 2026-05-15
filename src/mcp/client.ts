@@ -1,30 +1,31 @@
 import { createHash } from "crypto";
-import * as fs from "fs";
-import * as os from "os";
-import * as path from "path";
 import { spawn } from "child_process";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport, getDefaultEnvironment } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
-import { ClientCredentialsProvider } from "@modelcontextprotocol/sdk/client/auth-extensions.js";
-import type { OAuthTokens } from "@modelcontextprotocol/sdk/shared/auth.js";
-import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
 import type { Transport, FetchLike } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { AgentTool } from "../agent/types.js";
 import { loadMcpServers, type McpServerConfig } from "./config.js";
+import { buildAuthProvider, getAuthStatus, PersistentClientCredentialsProvider } from "./auth.js";
 
 type McpToolDef = Awaited<ReturnType<Client["listTools"]>>["tools"][number];
 type McpResourceDef = Awaited<ReturnType<Client["listResources"]>>["resources"][number];
+
+type ConnectionState = "disconnected" | "connecting" | "connected" | "error" | "reconnecting";
+
 type ManagedConnection = {
   config: McpServerConfig;
   key: string;
   client: Client;
   transport: Transport;
   connectedAt: number;
+  lastHealthCheck: number;
   tools: McpToolDef[];
   resources: McpResourceDef[];
+  state: ConnectionState;
   error?: string;
+  consecutiveFailures: number;
 };
 
 export type McpTool = AgentTool & {
@@ -38,13 +39,19 @@ export type McpServerStatus = {
   source: McpServerConfig["source"];
   command: string;
   connected: boolean;
+  state: ConnectionState;
   toolCount: number;
   resourceCount: number;
   error?: string;
+  authType: string;
+  needsAuth: boolean;
 };
 
 const connections = new Map<string, ManagedConnection>();
 const DEFAULT_MAX_OUTPUT_TOKENS = 25_000;
+const MAX_CONSECUTIVE_FAILURES = 3;
+const HEALTH_CHECK_INTERVAL_MS = 30_000;
+let healthCheckTimer: ReturnType<typeof setInterval> | undefined;
 
 function connectionKey(config: McpServerConfig): string {
   return createHash("sha256")
@@ -60,6 +67,7 @@ function connectionKey(config: McpServerConfig): string {
       bearerTokenEnv: config.bearerTokenEnv ?? "",
       auth: config.auth ?? {},
       headersHelper: config.headersHelper ?? "",
+      envFile: config.envFile ?? "",
     }))
     .digest("hex");
 }
@@ -91,159 +99,150 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): 
 async function connectServer(config: McpServerConfig): Promise<ManagedConnection> {
   const key = connectionKey(config);
   const existing = connections.get(config.name);
-  if (existing?.key === key && !existing.error) return existing;
+
+  if (existing?.key === key && existing.state === "connected") {
+    return existing;
+  }
 
   if (existing) {
-    await closeConnection(existing);
-    connections.delete(config.name);
+    if (existing.key !== key) {
+      await closeConnection(existing);
+      connections.delete(config.name);
+    } else if (existing.state === "connecting") {
+      return existing;
+    }
   }
 
-  const transport = await createTransport(config);
-  const client = new Client(
-    { name: "chorus-cli", version: "0.1.4" },
-    { capabilities: { roots: { listChanged: true } } },
-  );
-  const timeoutMs = config.timeoutMs ?? Number(process.env.MCP_TIMEOUT ?? 10_000);
+  const managed: ManagedConnection = {
+    config,
+    key,
+    client: new Client(
+      { name: "chorus-cli", version: "0.1.7" },
+      { capabilities: { roots: { listChanged: true } } },
+    ),
+    transport: undefined as unknown as Transport,
+    connectedAt: 0,
+    lastHealthCheck: 0,
+    tools: [],
+    resources: [],
+    state: "connecting",
+    consecutiveFailures: 0,
+  };
 
   try {
-    await withTimeout(client.connect(transport), timeoutMs, `MCP server "${config.name}" startup`);
+    managed.transport = await createTransport(config);
+    const timeoutMs = config.timeoutMs ?? Number(process.env.MCP_TIMEOUT ?? 10_000);
+
+    await withTimeout(managed.client.connect(managed.transport), timeoutMs, `MCP server "${config.name}" startup`);
+
     const [toolResult, resourceResult] = await Promise.allSettled([
-      withTimeout(client.listTools(), timeoutMs, `MCP server "${config.name}" tools/list`),
-      withTimeout(client.listResources(), timeoutMs, `MCP server "${config.name}" resources/list`),
+      withTimeout(managed.client.listTools(), timeoutMs, `MCP server "${config.name}" tools/list`),
+      withTimeout(managed.client.listResources(), timeoutMs, `MCP server "${config.name}" resources/list`),
     ]);
-    const managed: ManagedConnection = {
-      config,
-      key,
-      client,
-      transport,
-      connectedAt: Date.now(),
-      tools: toolResult.status === "fulfilled" ? toolResult.value.tools : [],
-      resources: resourceResult.status === "fulfilled" ? resourceResult.value.resources : [],
-      error: toolResult.status === "rejected" ? String(toolResult.reason) : undefined,
-    };
+
+    managed.tools = toolResult.status === "fulfilled" ? toolResult.value.tools : [];
+    managed.resources = resourceResult.status === "fulfilled" ? resourceResult.value.resources : [];
+    managed.connectedAt = Date.now();
+    managed.lastHealthCheck = Date.now();
+    managed.state = "connected";
+    managed.consecutiveFailures = 0;
+    managed.error = toolResult.status === "rejected" ? String(toolResult.reason) : undefined;
+
     connections.set(config.name, managed);
+    startHealthChecks();
     return managed;
   } catch (error) {
-    const managed: ManagedConnection = {
-      config,
-      key,
-      client,
-      transport,
-      connectedAt: Date.now(),
-      tools: [],
-      resources: [],
-      error: error instanceof Error ? error.message : String(error),
-    };
+    managed.state = "error";
+    managed.consecutiveFailures = (existing?.consecutiveFailures ?? 0) + 1;
+    managed.error = error instanceof Error ? error.message : String(error);
+    managed.connectedAt = Date.now();
     connections.set(config.name, managed);
     return managed;
   }
 }
 
-function getChorusDir(): string {
-  const homeDir = process.env.CHORUS_HOME_DIR ?? os.homedir();
-  const dir = path.join(homeDir, ".chorus");
-  fs.mkdirSync(dir, { recursive: true });
-  return dir;
-}
+async function reconnectServer(connection: ManagedConnection): Promise<void> {
+  if (connection.consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+    connection.state = "error";
+    connection.error = `Max reconnection attempts (${MAX_CONSECUTIVE_FAILURES}) exceeded`;
+    return;
+  }
 
-type PersistedMcpAuth = {
-  servers?: Record<string, { tokens?: OAuthTokens }>;
-};
-
-function authStorePath(): string {
-  return path.join(getChorusDir(), "mcp-auth.json");
-}
-
-function authStoreKey(config: McpServerConfig): string {
-  return createHash("sha256").update(`${config.name}:${config.url ?? ""}`).digest("hex");
-}
-
-function loadAuthStore(): PersistedMcpAuth {
+  connection.state = "reconnecting";
   try {
-    return JSON.parse(fs.readFileSync(authStorePath(), "utf-8")) as PersistedMcpAuth;
-  } catch {
-    return {};
-  }
-}
+    await connection.client.close();
+  } catch { /* ignore */ }
 
-function saveAuthStore(store: PersistedMcpAuth): void {
-  const filePath = authStorePath();
-  const tmp = `${filePath}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(store, null, 2), { encoding: "utf-8", mode: 0o600 });
-  fs.renameSync(tmp, filePath);
   try {
-    fs.chmodSync(filePath, 0o600);
-  } catch {
-    // Best effort for Windows and restricted filesystems.
+    connection.transport = await createTransport(connection.config);
+    const timeoutMs = connection.config.timeoutMs ?? Number(process.env.MCP_TIMEOUT ?? 10_000);
+    await withTimeout(connection.client.connect(connection.transport), timeoutMs, `MCP server "${connection.config.name}" reconnect`);
+    await withTimeout(connection.client.listTools(), timeoutMs, `MCP server "${connection.config.name}" tools refresh`);
+
+    connection.state = "connected";
+    connection.consecutiveFailures = 0;
+    connection.connectedAt = Date.now();
+    connection.lastHealthCheck = Date.now();
+    connection.error = undefined;
+  } catch (error) {
+    connection.state = "error";
+    connection.consecutiveFailures += 1;
+    connection.error = error instanceof Error ? error.message : String(error);
   }
 }
 
-class PersistentClientCredentialsProvider extends ClientCredentialsProvider {
-  constructor(
-    options: ConstructorParameters<typeof ClientCredentialsProvider>[0],
-    private readonly storeKey: string,
-  ) {
-    super(options);
-    const tokens = loadAuthStore().servers?.[storeKey]?.tokens;
-    if (tokens) super.saveTokens(tokens);
-  }
+async function healthCheck(connection: ManagedConnection): Promise<void> {
+  if (connection.state !== "connected" && connection.state !== "error") return;
+  connection.lastHealthCheck = Date.now();
 
-  override tokens(): OAuthTokens | undefined {
-    return loadAuthStore().servers?.[this.storeKey]?.tokens ?? super.tokens();
-  }
-
-  override saveTokens(tokens: OAuthTokens): void {
-    super.saveTokens(tokens);
-    const store = loadAuthStore();
-    store.servers = {
-      ...(store.servers ?? {}),
-      [this.storeKey]: { tokens },
-    };
-    saveAuthStore(store);
-  }
-}
-
-function buildAuthProvider(config: McpServerConfig): OAuthClientProvider | undefined {
-  const auth = config.auth;
-  if (!auth || auth.type === "none") return undefined;
-
-  if (auth.type === "bearer") {
-    const token = auth.tokenEnv ? process.env[auth.tokenEnv] : undefined;
-    if (!token) throw new Error(`MCP server "${config.name}" is missing token env ${auth.tokenEnv}`);
-    return {
-      redirectUrl: undefined,
-      clientMetadata: {
-        redirect_uris: [],
-        grant_types: [],
-        response_types: [],
-        client_name: "chorus-cli",
-      },
-      clientInformation: () => undefined,
-      tokens: () => ({ access_token: token, token_type: "Bearer" }),
-      saveTokens: () => undefined,
-      redirectToAuthorization: () => undefined,
-      saveCodeVerifier: () => undefined,
-      codeVerifier: () => "",
-    };
-  }
-
-  if (auth.type === "client_credentials") {
-    const clientId = auth.clientIdEnv ? process.env[auth.clientIdEnv] : undefined;
-    const clientSecret = auth.clientSecretEnv ? process.env[auth.clientSecretEnv] : undefined;
-    if (!clientId || !clientSecret) {
-      throw new Error(`MCP server "${config.name}" is missing OAuth client credential env vars`);
+  try {
+    const timeoutMs = Math.min(connection.config.timeoutMs ?? 10_000, 5_000);
+    await withTimeout(connection.client.ping({}), timeoutMs, `MCP server "${connection.config.name}" health check`);
+    if (connection.state !== "connected") {
+      connection.state = "connected";
+      connection.consecutiveFailures = 0;
+      connection.error = undefined;
     }
-    return new PersistentClientCredentialsProvider({
-      clientId,
-      clientSecret,
-      clientName: auth.clientName ?? "chorus-cli",
-      scope: auth.scope,
-    }, authStoreKey(config));
+  } catch {
+    if (connection.state === "connected") {
+      connection.state = "error";
+      connection.consecutiveFailures += 1;
+      connection.error = "Health check failed - server may be unreachable";
+    }
+    if (connection.consecutiveFailures < MAX_CONSECUTIVE_FAILURES) {
+      await reconnectServer(connection);
+    }
   }
-
-  return undefined;
 }
 
+function startHealthChecks(): void {
+  if (healthCheckTimer) return;
+  healthCheckTimer = setInterval(() => {
+    for (const connection of connections.values()) {
+      healthCheck(connection);
+    }
+  }, HEALTH_CHECK_INTERVAL_MS);
+  healthCheckTimer.unref();
+}
+
+function stopHealthChecks(): void {
+  if (healthCheckTimer) {
+    clearInterval(healthCheckTimer);
+    healthCheckTimer = undefined;
+  }
+}
+
+async function closeConnection(connection: ManagedConnection): Promise<void> {
+  try {
+    await connection.client.close();
+  } catch {
+    try {
+      await connection.transport.close();
+    } catch {
+      // ignore shutdown failures
+    }
+  }
+}
 function parseHelperHeaders(output: string, serverName: string): Record<string, string> {
   const parsed = JSON.parse(output) as unknown;
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
@@ -346,18 +345,6 @@ async function createTransport(config: McpServerConfig): Promise<Transport> {
   }
 
   return new StreamableHTTPClientTransport(new URL(config.url!), { authProvider, requestInit });
-}
-
-async function closeConnection(connection: ManagedConnection): Promise<void> {
-  try {
-    await connection.client.close();
-  } catch {
-    try {
-      await connection.transport.close();
-    } catch {
-      // ignore shutdown failures
-    }
-  }
 }
 
 function outputTokenLimit(config: McpServerConfig): number {
@@ -478,17 +465,21 @@ export async function getMcpTools(): Promise<McpTool[]> {
 
 export async function getMcpStatus(): Promise<McpServerStatus[]> {
   const configs = loadMcpServers();
-  await Promise.all(configs.map(connectServer));
+  await Promise.allSettled(configs.map((c) => connectServer(c)));
   return configs.map((config) => {
     const connection = connections.get(config.name);
+    const auth = getAuthStatus(config);
     return {
       name: config.name,
       source: config.source,
       command: formatServerEndpoint(config),
-      connected: !!connection && !connection.error,
+      connected: connection?.state === "connected",
+      state: connection?.state ?? "disconnected",
       toolCount: connection?.tools.length ?? 0,
       resourceCount: connection?.resources.length ?? 0,
       error: connection?.error,
+      authType: auth.type,
+      needsAuth: auth.needsAuth,
     };
   });
 }
@@ -503,6 +494,7 @@ function formatServerEndpoint(config: McpServerConfig): string {
 export async function reloadMcpConnections(): Promise<McpServerStatus[]> {
   const current = [...connections.values()];
   connections.clear();
+  stopHealthChecks();
   await Promise.all(current.map(closeConnection));
   return getMcpStatus();
 }
@@ -510,5 +502,6 @@ export async function reloadMcpConnections(): Promise<McpServerStatus[]> {
 export async function closeMcpConnections(): Promise<void> {
   const current = [...connections.values()];
   connections.clear();
+  stopHealthChecks();
   await Promise.all(current.map(closeConnection));
 }

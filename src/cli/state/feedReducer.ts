@@ -387,6 +387,7 @@ export function feedReducer(state: FeedState, action: FeedAction): FeedState {
     }
 
     case "APPEND_SYSTEM": {
+      if (state.entries.some((e) => e.id === action.id)) return state;
       return {
         ...state,
         entries: [...state.entries, { kind: "system", id: action.id, text: action.text }],

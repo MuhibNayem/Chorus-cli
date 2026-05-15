@@ -21,6 +21,7 @@ interface PrepareTaskExecutionInput {
   basePrompt: string;
   messages: Array<{ role: string; content: string; reasoning_content?: string }>;
   mode?: ExecutionMode;
+  isAgentInvocation?: boolean;
 }
 
 function createWorkerAssignments(taskId: string, route: TaskRoute, _mode: ExecutionMode): WorkerAssignment[] {
@@ -75,7 +76,7 @@ export function prepareTaskExecution(input: PrepareTaskExecutionInput): Prepared
     status: "running",
     createdAt: Date.now(),
     updatedAt: Date.now(),
-    verificationCriteria: buildVerificationCriteria(route, mode),
+    verificationCriteria: buildVerificationCriteria(route, mode, input.isAgentInvocation),
   };
 
   const workerAssignments = mode === "plan" ? [] : createWorkerAssignments(task.taskId, route, mode);

@@ -46,16 +46,25 @@ export type McpServerSettings = {
   };
   bearerTokenEnv?: string;
   auth?: {
-    type?: "none" | "bearer" | "client_credentials";
+    type?: "none" | "bearer" | "client_credentials" | "authorization_code" | "aws_sigv4";
     tokenEnv?: string;
     clientIdEnv?: string;
     clientSecretEnv?: string;
+    authorizationUrl?: string;
+    tokenUrl?: string;
     scope?: string;
     clientName?: string;
+    awsRegion?: string;
+    awsService?: string;
+    awsProfile?: string;
+    awsAccessKeyIdEnv?: string;
+    awsSecretAccessKeyEnv?: string;
+    awsSessionTokenEnv?: string;
   };
   enabled?: boolean;
   timeoutMs?: number;
   maxOutputTokens?: number;
+  envFile?: string;
 };
 
 export type ChorusSettings = {

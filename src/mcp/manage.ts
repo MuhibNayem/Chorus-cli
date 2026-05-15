@@ -1,6 +1,7 @@
 import { loadSettings, saveSettings, type McpServerSettings } from "../settings/storage.js";
 import { getMcpStatus } from "./client.js";
-import { formatMcpConfigExample, getProjectMcpTrust, trustProjectMcpConfig, untrustProjectMcpConfig } from "./config.js";
+import { formatMcpConfigExample, getProjectMcpTrust, trustProjectMcpConfig, untrustProjectMcpConfig, loadMcpServers } from "./config.js";
+import { runOAuthFlow, getAuthStatus, clearTokens, authStoreKey } from "./auth.js";
 
 type ParsedMcpAdd = {
   name: string;
@@ -88,9 +89,14 @@ export async function runMcpCliCommand(args: string[]): Promise<number> {
       return 0;
     }
     for (const s of statuses) {
-      const state = s.connected ? "connected" : "error";
-      const detail = s.connected ? `${s.toolCount} tools, ${s.resourceCount} resources` : s.error ?? "failed";
-      console.log(`${s.name}\t${state}\t${s.source}\t${detail}\t${s.command}`);
+      const stateIcon = s.connected ? "✓" : s.state === "connecting" ? "⟳" : s.needsAuth ? "🔒" : "✗";
+      const detail = s.connected
+        ? `${s.toolCount} tools, ${s.resourceCount} resources`
+        : s.needsAuth
+          ? `needs auth (${s.authType}) — run 'chorus mcp auth ${s.name}'`
+          : s.error ?? "failed";
+      const authTag = s.authType !== "none" ? ` [${s.authType}]` : "";
+      console.log(`${stateIcon} ${s.name}${authTag}\t${s.state}\t${s.source}\t${detail}\t${s.command}`);
     }
     return 0;
   }
@@ -153,6 +159,50 @@ export async function runMcpCliCommand(args: string[]): Promise<number> {
     return 0;
   }
 
-  console.error("Usage: chorus mcp list | trust | untrust | add | add-json | remove");
+  if (subcommand === "auth") {
+    const name = args[1];
+    if (!name) throw new Error("Usage: chorus mcp auth <server-name>");
+
+    const configs = loadMcpServers();
+    const config = configs.find((c) => c.name === name);
+    if (!config) throw new Error(`MCP server "${name}" not found in configuration.`);
+
+    const auth = getAuthStatus(config);
+    if (auth.type === "none") {
+      console.log(`Server "${name}" does not require authentication.`);
+      return 0;
+    }
+
+    if (auth.type !== "authorization_code") {
+      console.log(`Server "${name}" uses ${auth.type} auth — no browser flow needed.`);
+      if (auth.needsAuth) {
+        console.log(`Set the required environment variables and re-run.`);
+      }
+      return auth.needsAuth ? 1 : 0;
+    }
+
+    try {
+      await runOAuthFlow(config);
+    } catch (error) {
+      console.error(`OAuth flow failed: ${error instanceof Error ? error.message : String(error)}`);
+      return 1;
+    }
+    return 0;
+  }
+
+  if (subcommand === "unauth") {
+    const name = args[1];
+    if (!name) throw new Error("Usage: chorus mcp unauth <server-name>");
+
+    const configs = loadMcpServers();
+    const config = configs.find((c) => c.name === name);
+    if (!config) throw new Error(`MCP server "${name}" not found in configuration.`);
+
+    clearTokens(authStoreKey(config));
+    console.log(`Cleared stored tokens for "${name}".`);
+    return 0;
+  }
+
+  console.error("Usage: chorus mcp list | trust | untrust | add | add-json | remove | auth | unauth");
   return 1;
 }

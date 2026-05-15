@@ -6,7 +6,7 @@ import type { ApprovalPolicy, ExecutionMode } from "../harness/types.js";
 import { describeApprovalPolicy } from "./hooks/agent/toolPolicy.js";
 import { SWARM_PRESETS } from "../swarm/presets/index.js";
 import { buildSwarmReport, formatSwarmReport, listSwarmTraces } from "../swarm/report.js";
-import { formatMcpConfigExample, getMcpStatus, getProjectMcpTrust, reloadMcpConnections, trustProjectMcpConfig } from "../mcp/index.js";
+import { getProjectMcpTrust, reloadMcpConnections, trustProjectMcpConfig, loadMcpServers, runOAuthFlow, getAuthStatus } from "../mcp/index.js";
 import { estimateCost, formatCost } from "../llm/pricing.js";
 import * as fs from "fs";
 import * as path from "path";
@@ -29,6 +29,7 @@ export interface CommandContext {
   showModeModelSelect?: (mode: "build" | "plan") => void;
   showApiKeysConfig?: () => void;
   showMcpAddWizard?: () => void;
+  showMcpDashboard?: () => void;
   getExecutionMode?: () => ExecutionMode;
   setExecutionMode?: (mode: ExecutionMode) => void;
   getApprovalPolicy?: () => ApprovalPolicy;
@@ -112,6 +113,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: "/mcp",           description: "Show MCP server status and configured tools" },
   { name: "/mcp-add",       description: "Add an MCP server interactively" },
   { name: "/mcp-trust",     description: "Trust this workspace .mcp.json after review" },
+  { name: "/mcp-auth",      description: "Start OAuth browser flow: /mcp-auth <server-name>" },
   { name: "/mcp-reload",    description: "Reconnect configured MCP servers" },
   // ── Config & exit ──────────────────────────────────────────────────────────
   { name: "/config",        description: "Configure API keys (Serper, Google CSE, Weather)" },
@@ -663,35 +665,7 @@ export function handleSlashCommand(
     }
 
     case "/mcp": {
-      const trust = getProjectMcpTrust();
-      void getMcpStatus()
-        .then((statuses) => {
-          if (statuses.length === 0) {
-            const trustNote = trust.exists && !trust.trusted
-              ? `Project .mcp.json is present but not trusted:\n${trust.filePath}\nRun /mcp-trust after reviewing it.\n\n`
-              : "";
-            ctx.dispatch({
-              type: "APPEND_SYSTEM",
-              id,
-              text: `${trustNote}No MCP servers configured.\n\nCreate .mcp.json in this workspace or add mcp.servers to ~/.chorus/settings.json.\n\nExample:\n${formatMcpConfigExample()}`,
-            });
-            return;
-          }
-          const rows = statuses.map((s) => {
-            const state = s.connected ? "connected" : "error";
-            const detail = s.connected
-              ? `${s.toolCount} tools, ${s.resourceCount} resources`
-              : s.error ?? "failed";
-            return `  ${s.name.padEnd(18)} ${state.padEnd(10)} ${s.source.padEnd(7)} ${detail}`;
-          });
-          const trustNote = trust.exists && !trust.trusted
-            ? `Project .mcp.json is present but not trusted: ${trust.filePath}\nRun /mcp-trust after reviewing it.\n\n`
-            : "";
-          ctx.dispatch({ type: "APPEND_SYSTEM", id, text: `${trustNote}MCP servers:\n${rows.join("\n")}` });
-        })
-        .catch((error) => {
-          ctx.dispatch({ type: "APPEND_SYSTEM", id, text: `MCP status failed: ${error instanceof Error ? error.message : String(error)}` });
-        });
+      ctx.showMcpDashboard?.();
       return true;
     }
 
@@ -720,6 +694,41 @@ export function handleSlashCommand(
         })
         .catch((error) => {
           ctx.dispatch({ type: "APPEND_SYSTEM", id, text: `MCP reload failed: ${error instanceof Error ? error.message : String(error)}` });
+        });
+      return true;
+    }
+
+    case "/mcp-auth": {
+      const serverName = input.trim().slice(9).trim();
+      if (!serverName) {
+        ctx.dispatch({ type: "APPEND_SYSTEM", id, text: "Usage: /mcp-auth <server-name>" });
+        return true;
+      }
+      const configs = loadMcpServers();
+      const config = configs.find((c) => c.name === serverName);
+      if (!config) {
+        ctx.dispatch({ type: "APPEND_SYSTEM", id, text: `MCP server "${serverName}" not found.` });
+        return true;
+      }
+      const auth = getAuthStatus(config);
+      if (auth.type === "none") {
+        ctx.dispatch({ type: "APPEND_SYSTEM", id, text: `Server "${serverName}" does not require authentication.` });
+        return true;
+      }
+      if (auth.type !== "authorization_code") {
+        ctx.dispatch({
+          type: "APPEND_SYSTEM",
+          id,
+          text: `Server "${serverName}" uses ${auth.type} auth (no browser flow). ${auth.needsAuth ? "Set required env vars and run /mcp-reload." : "Already authenticated."}`,
+        });
+        return true;
+      }
+      void runOAuthFlow(config)
+        .then(() => {
+          ctx.dispatch({ type: "APPEND_SYSTEM", id, text: `Authorization successful for "${serverName}". Run /mcp-reload to refresh connections.` });
+        })
+        .catch((error) => {
+          ctx.dispatch({ type: "APPEND_SYSTEM", id, text: `OAuth failed: ${error instanceof Error ? error.message : String(error)}` });
         });
       return true;
     }
