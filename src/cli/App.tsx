@@ -12,6 +12,7 @@ import { SelectBox, type SelectItem } from "./components/SelectBox.js";
 import { SessionView } from "./components/SessionView.js";
 import { WelcomeScreen } from "./components/WelcomeScreen.js";
 import { feedReducer, initialFeedState } from "./state/feedReducer.js";
+import { countTokens } from "../context/tokenizer.js";
 import { useAgentStream } from "./hooks/useAgentStream.js";
 import { handleSlashCommand, SLASH_COMMANDS } from "./commands.js";
 import { getProviderLabel, getProviderModel, getContextWindow, normalizeProviderName, resetDefaultProvider, getDefaultProvider } from "../llm/index.js";
@@ -29,6 +30,7 @@ import { deleteAgent } from "../agents/storage.js";
 import { AgentCreator } from "./components/AgentCreator.js";
 import { AgentViewer } from "./components/AgentViewer.js";
 import { ApprovalCard } from "./components/ApprovalCard.js";
+import { McpServerWizard } from "./components/McpServerWizard.js";
 import { runSwarm } from "../swarm/orchestrator.js";
 import { buildPresetSwarm } from "../swarm/presets/index.js";
 import { createProvider } from "../llm/registry.js";
@@ -56,36 +58,128 @@ function loadWorkspaceFiles(): string[] {
 }
 
 const SECRET_PATTERNS = [/\.env(\.|$)/i, /credentials/i, /secret/i, /\.pem$/i, /\.key$/i, /\.pfx$/i, /\.p12$/i, /id_rsa/i, /id_ed25519/i];
+const MAX_TOKENS_PER_MENTION = 4_000;
+const TRUNCATED_HEAD_LINES = 60;
+const TRUNCATED_TAIL_LINES = 40;
+const MAX_FILE_SIZE_BYTES = 2 * 1024 * 1024;
 
 function isSecretFile(filePath: string): boolean {
   return SECRET_PATTERNS.some((re) => re.test(filePath));
 }
 
+function isBinaryContent(buf: Buffer): boolean {
+  // Check first 8KB for null bytes — strong signal of binary
+  const sample = buf.slice(0, 8192);
+  return sample.includes(0);
+}
+
 function expandMentions(text: string, workspaceFiles: string[]): string {
   const mentionRe = /@([\w./\\-]+)/g;
-  let expanded = text;
   const matches = [...text.matchAll(mentionRe)];
+  if (matches.length === 0) return text;
+
+  const seen = new Set<string>();
+  let result = "";
+  let lastIndex = 0;
+
   for (const match of matches) {
     const mention = match[1];
-    const found = workspaceFiles.find(
-      (f) => f === mention || f.endsWith(`/${mention}`) || path.basename(f) === mention
-    );
-    if (!found) continue;
-    if (isSecretFile(found)) {
-      expanded = expanded.replace(match[0], `@[${found} — secret file skipped]`);
+    const mentionIndex = match.index ?? 0;
+    const mentionText = match[0];
+
+    // Append text between last match and this one
+    result += text.slice(lastIndex, mentionIndex);
+    lastIndex = mentionIndex + mentionText.length;
+
+    if (seen.has(mention)) {
+      // Already expanded this mention earlier — keep the @reference but skip re-inlining
+      result += mentionText;
       continue;
     }
-    const absPath = path.join(WORKSPACE, found);
+    seen.add(mention);
+
+    // 1) Try exact / partial file match
+    const foundFile = workspaceFiles.find(
+      (f) => f === mention || f.endsWith(`/${mention}`) || path.basename(f) === mention
+    );
+
+    // 2) Try folder match
+    const isFolderQuery = mention.endsWith("/");
+    const folderPrefix = isFolderQuery ? mention : `${mention}/`;
+    const foundFolderFiles = !foundFile
+      ? workspaceFiles.filter((f) => f.startsWith(folderPrefix))
+      : [];
+
+    if (!foundFile && foundFolderFiles.length === 0) {
+      result += mentionText;
+      continue;
+    }
+
+    // Folder mention → list files, never inline content
+    if (!foundFile && foundFolderFiles.length > 0) {
+      const listing = foundFolderFiles.slice(0, 50).join("\n");
+      const more = foundFolderFiles.length > 50
+        ? `\n... and ${foundFolderFiles.length - 50} more files`
+        : "";
+      result += `@${mention}\n\n[Folder: ${mention}]\n${listing}${more}`;
+      continue;
+    }
+
+    if (!foundFile) {
+      result += mentionText;
+      continue;
+    }
+
+    // File mention
+    if (isSecretFile(foundFile)) {
+      result += `@[${foundFile} — secret file skipped]`;
+      continue;
+    }
+
+    const absPath = path.join(WORKSPACE, foundFile);
     try {
-      const content = fs.readFileSync(absPath, "utf-8");
-      const ext = path.extname(found).slice(1) || "text";
-      const block = `\n\n[File: ${found}]\n\`\`\`${ext}\n${content}\n\`\`\``;
-      expanded = expanded.replace(match[0], `@${found}${block}`);
+      const stats = fs.statSync(absPath);
+      if (!stats.isFile()) {
+        result += mentionText;
+        continue;
+      }
+      if (stats.size > MAX_FILE_SIZE_BYTES) {
+        result += `@[${foundFile} — file too large (${(stats.size / 1024 / 1024).toFixed(1)} MB), skipped]`;
+        continue;
+      }
+
+      const raw = fs.readFileSync(absPath);
+      if (isBinaryContent(raw)) {
+        result += `@[${foundFile} — binary file, skipped]`;
+        continue;
+      }
+
+      const content = raw.toString("utf-8");
+      const lines = content.split("\n");
+      const totalTokens = countTokens(content);
+      const ext = path.extname(foundFile).slice(1) || "text";
+
+      let displayContent: string;
+      let truncatedBadge = "";
+
+      if (totalTokens <= MAX_TOKENS_PER_MENTION) {
+        displayContent = content;
+      } else {
+        const head = lines.slice(0, TRUNCATED_HEAD_LINES).join("\n");
+        const tail = lines.slice(-TRUNCATED_TAIL_LINES).join("\n");
+        const omitted = lines.length - TRUNCATED_HEAD_LINES - TRUNCATED_TAIL_LINES;
+        truncatedBadge = ` · truncated (${omitted} lines omitted)`;
+        displayContent = `${head}\n\n[... ${omitted} lines omitted · ${totalTokens.toLocaleString()} tokens total · use read_file tool to view full content ...]\n\n${tail}`;
+      }
+
+      result += `@${foundFile}\n\n[File: ${foundFile} · ${lines.length} lines · ${totalTokens.toLocaleString()} tokens${truncatedBadge}]\n\`\`\`${ext}\n${displayContent}\n\`\`\``;
     } catch {
-      // Unreadable — leave mention as-is
+      result += mentionText;
     }
   }
-  return expanded;
+
+  result += text.slice(lastIndex);
+  return result;
 }
 
 export function App() {
@@ -111,6 +205,7 @@ export function App() {
   const [selectionMode, setSelectionMode] = useState<SelectionMode>(null);
   const [selectionIndex, setSelectionIndex] = useState(0);
   const [sessionViewId, setSessionViewId] = useState<string | null>(null);
+  const [mcpWizardOpen, setMcpWizardOpen] = useState(false);
 
   const showModelSelectForProvider = useCallback((provider: string) => {
     const ps = loadSettings().llm?.providers?.[provider] ?? {};
@@ -480,6 +575,10 @@ export function App() {
     }
 
     if (key.escape) {
+      if (activeSuggestions.length > 0 || suggestionIndex >= 0) {
+        setSuggestionIndex(-1);
+        return;
+      }
       setInputValue("");
       setSuggestionIndex(-1);
       return;
@@ -517,9 +616,14 @@ export function App() {
 
     if (key.tab) {
       if (activeSuggestions.length > 0) {
-        setSuggestionIndex((i) =>
-          i < 0 ? 0 : (i + 1) % activeSuggestions.length
-        );
+        const selected = activeSuggestions[suggestionIndex < 0 ? 0 : suggestionIndex];
+        if (slashSuggestions.length > 0) {
+          setInputValue(selected.label + " ");
+        } else {
+          setInputValue((v) => v.replace(/@([\w./\\-]*)$/, `@${selected.label} `));
+        }
+        setSuggestionIndex(-1);
+        setInputKey((k) => k + 1);
         return;
       }
       if (expandableIds.length > 0) {
@@ -963,6 +1067,7 @@ export function App() {
         showAgents,
         submitBtw,
         showApiKeysConfig: () => setShowingApiKeysConfig(true),
+        showMcpAddWizard: () => setMcpWizardOpen(true),
         runSwarmPreset,
         stopSwarm,
         listSwarmTraces,
@@ -1121,6 +1226,27 @@ export function App() {
     return (
       <Box flexDirection="column">
         <AgentViewer agent={agentViewerTarget} onBack={() => setAgentViewerTarget(null)} />
+        <StatusBar
+          modelLabel={displayLabel}
+          tokens={tokens}
+          agentState="idle"
+          sessionName={sessionManager.getCurrent()?.name}
+          maxTokens={contextWindow}
+        />
+      </Box>
+    );
+  }
+
+  if (mcpWizardOpen) {
+    return (
+      <Box flexDirection="column">
+        <McpServerWizard
+          onDone={(msg) => {
+            setMcpWizardOpen(false);
+            dispatch({ type: "APPEND_SYSTEM", id: `sys-${Date.now()}`, text: msg });
+          }}
+          onCancel={() => setMcpWizardOpen(false)}
+        />
         <StatusBar
           modelLabel={displayLabel}
           tokens={tokens}

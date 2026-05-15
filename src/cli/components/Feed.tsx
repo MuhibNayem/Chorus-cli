@@ -1,4 +1,5 @@
-import { Box, Text } from "ink";
+import { memo, useCallback } from "react";
+import { Box, Static, Text } from "ink";
 import type { FeedEntry } from "../state/feedReducer.js";
 import { UserMessage } from "./UserMessage.js";
 import { AgentTurn } from "./AgentTurn.js";
@@ -13,33 +14,36 @@ interface FeedProps {
   focusedSwarmSectionId?: string | null;
 }
 
-function renderStaticEntry(
-  entry: FeedEntry,
-  onToggle: (id: string) => void,
-  onToggleSwarmAgent: (swarmId: string, sectionId: string) => void,
-) {
+function isStaticEntry(entry: FeedEntry): boolean {
+  if (entry.kind === "user") return true;
+  if (entry.kind === "system") return true;
+  if (entry.kind === "error") return true;
+  if (entry.kind === "turn" && entry.done) return true;
+  if (entry.kind === "swarm-turn" && entry.status !== "running") return true;
+  return false;
+}
+
+function StaticItem({ entry, onToggle, onToggleSwarmAgent }: {
+  entry: FeedEntry;
+  onToggle: (id: string) => void;
+  onToggleSwarmAgent: (swarmId: string, sectionId: string) => void;
+}) {
   switch (entry.kind) {
     case "user":
-      return <UserMessage key={entry.id} text={entry.text} />;
+      return <UserMessage text={entry.text} />;
     case "turn":
-      return <AgentTurn key={entry.id} entry={entry} onToggle={onToggle} />;
+      return <AgentTurn entry={entry} onToggle={onToggle} />;
     case "swarm-turn":
-      return (
-        <SwarmTurnCard
-          key={entry.id}
-          entry={entry}
-          onToggleAgent={onToggleSwarmAgent}
-        />
-      );
+      return <SwarmTurnCard entry={entry} onToggleAgent={onToggleSwarmAgent} />;
     case "error":
       return (
-        <Box key={entry.id} marginBottom={1}>
+        <Box marginBottom={1}>
           <Text color="red">{"✗ "}{entry.message}</Text>
         </Box>
       );
     case "system":
       return (
-        <Box key={entry.id} marginBottom={1} marginLeft={2}>
+        <Box marginBottom={1} marginLeft={2}>
           <Text color="cyan">{entry.text}</Text>
         </Box>
       );
@@ -47,6 +51,8 @@ function renderStaticEntry(
       return null;
   }
 }
+
+const MemoStaticItem = memo(StaticItem);
 
 export function Feed({
   entries,
@@ -56,9 +62,27 @@ export function Feed({
   focusedId,
   focusedSwarmSectionId,
 }: FeedProps) {
+  const staticEntries = entries.filter(isStaticEntry);
+  const dynamicEntries = entries.filter((e) => !isStaticEntry(e));
+
+  const renderStatic = useCallback(
+    (entry: FeedEntry) => (
+      <MemoStaticItem
+        key={entry.id}
+        entry={entry}
+        onToggle={onToggle}
+        onToggleSwarmAgent={onToggleSwarmAgent}
+      />
+    ),
+    [onToggle, onToggleSwarmAgent],
+  );
+
   return (
     <Box flexDirection="column" flexGrow={1}>
-      {entries.map((entry) => {
+      <Static items={staticEntries}>
+        {(entry) => renderStatic(entry)}
+      </Static>
+      {dynamicEntries.map((entry) => {
         if (entry.kind === "turn") {
           return (
             <AgentTurn
@@ -80,8 +104,7 @@ export function Feed({
             />
           );
         }
-        // Non-live entries that follow (system messages, errors)
-        return renderStaticEntry(entry, onToggle, onToggleSwarmAgent);
+        return null;
       })}
     </Box>
   );

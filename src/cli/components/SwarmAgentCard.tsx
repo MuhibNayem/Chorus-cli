@@ -69,7 +69,7 @@ export function SwarmAgentCard({ section, focused = false }: SwarmAgentCardProps
           {(section.text || isRunning) && (
             <Box marginTop={0}>
               <Text wrap="wrap">
-                {section.text.slice(-4000)}
+                {section.text}
                 {isRunning ? cursor : ""}
               </Text>
             </Box>

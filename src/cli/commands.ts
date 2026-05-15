@@ -28,6 +28,7 @@ export interface CommandContext {
   showAgents?: () => void;
   showModeModelSelect?: (mode: "build" | "plan") => void;
   showApiKeysConfig?: () => void;
+  showMcpAddWizard?: () => void;
   getExecutionMode?: () => ExecutionMode;
   setExecutionMode?: (mode: ExecutionMode) => void;
   getApprovalPolicy?: () => ApprovalPolicy;
@@ -109,6 +110,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: "/swarm-report",  description: "Show observability report for a swarm: /swarm-report <swarmId>" },
   // ── MCP ────────────────────────────────────────────────────────────────────
   { name: "/mcp",           description: "Show MCP server status and configured tools" },
+  { name: "/mcp-add",       description: "Add an MCP server interactively" },
   { name: "/mcp-trust",     description: "Trust this workspace .mcp.json after review" },
   { name: "/mcp-reload",    description: "Reconnect configured MCP servers" },
   // ── Config & exit ──────────────────────────────────────────────────────────
@@ -133,7 +135,7 @@ function buildHelpText(): string {
     else if (["/sessions","/session","/resume","/session-new"].includes(cmd.name)) group = "Sessions";
     else if (["/agents","/btw","/advisor"].includes(cmd.name)) group = "Agents";
     else if (["/swarm","/swarm-stop","/swarm-traces","/swarm-report"].includes(cmd.name)) group = "Swarm";
-    else if (["/mcp","/mcp-trust","/mcp-reload"].includes(cmd.name)) group = "MCP";
+    else if (["/mcp","/mcp-add","/mcp-trust","/mcp-reload"].includes(cmd.name)) group = "MCP";
     else if (["/config","/exit"].includes(cmd.name)) group = "Config";
 
     if (!groups[group]) { groups[group] = []; order.push(group); }
@@ -702,6 +704,11 @@ export function handleSlashCommand(
           ? `Trusted project MCP config: ${trust.filePath}`
           : "No .mcp.json found in this workspace.",
       });
+      return true;
+    }
+
+    case "/mcp-add": {
+      ctx.showMcpAddWizard?.();
       return true;
     }
 

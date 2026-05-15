@@ -34,6 +34,33 @@ function getPackageVersion(): string {
   }
 }
 
+function createSynchronizedStdout(stdout: NodeJS.WriteStream): NodeJS.WriteStream {
+  // DECSET 2026: synchronized output — tells supported terminals to treat
+  // the wrapped write as an atomic frame update, eliminating flicker from
+  // intermediate cursor positions during redraws.
+  const SYNC_START = "\x1b[?2026h";
+  const SYNC_END = "\x1b[?2026l";
+
+  return new Proxy(stdout, {
+    get(target, prop) {
+      if (prop === "write") {
+        return (
+          chunk: string | Uint8Array,
+          encoding?: BufferEncoding | ((err?: Error | null) => void),
+          cb?: (err?: Error | null) => void,
+        ) => {
+          const callback = typeof encoding === "function" ? encoding : cb;
+          const enc = typeof encoding === "string" ? encoding : undefined;
+          const wrapped = SYNC_START + chunk + SYNC_END;
+          return target.write(wrapped, enc as BufferEncoding, callback);
+        };
+      }
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-return
+      return (target as any)[prop];
+    },
+  }) as NodeJS.WriteStream;
+}
+
 async function main() {
   const args = process.argv.slice(2);
 
@@ -63,12 +90,15 @@ async function main() {
     return;
   }
 
+  const syncStdout = createSynchronizedStdout(process.stdout);
+
   if (!hasRequiredLlmSettings()) {
     await new Promise<void>((resolve) => {
       const { unmount } = render(
         createElement(ConfigWizard, {
           onDone: () => { unmount(); resolve(); },
         }),
+        { stdout: syncStdout },
       );
     });
   }
@@ -79,7 +109,7 @@ async function main() {
 
   process.on("exit", () => sessionManager.flushSync());
 
-  render(createElement(App));
+  render(createElement(App), { stdout: syncStdout });
 }
 
 main();

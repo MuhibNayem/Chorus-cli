@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { Box, Text } from "ink";
 import type { FeedEntry } from "../state/feedReducer.js";
 import { SwarmAgentCard } from "./SwarmAgentCard.js";
@@ -19,7 +20,7 @@ const SWARM_COLOR: Record<string, "cyan" | "green" | "red"> = {
   error: "red",
 };
 
-export function SwarmTurnCard({ entry, focusedSectionId = null }: SwarmTurnCardProps) {
+function SwarmTurnCardInner({ entry, focusedSectionId = null }: SwarmTurnCardProps) {
   const icon = SWARM_ICON[entry.status] ?? "?";
   const color = SWARM_COLOR[entry.status] ?? "green";
   const isRunning = entry.status === "running";
@@ -106,3 +107,5 @@ export function SwarmTurnCard({ entry, focusedSectionId = null }: SwarmTurnCardP
     </Box>
   );
 }
+
+export const SwarmTurnCard = memo(SwarmTurnCardInner);

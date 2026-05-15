@@ -1,10 +1,11 @@
+import { memo } from "react";
 import { Box, Text } from "ink";
 
 interface UserMessageProps {
   text: string;
 }
 
-export function UserMessage({ text }: UserMessageProps) {
+function UserMessageInner({ text }: UserMessageProps) {
   return (
     <Box marginBottom={1} flexDirection="row">
       <Text color="cyan" bold>{">"} </Text>
@@ -12,3 +13,5 @@ export function UserMessage({ text }: UserMessageProps) {
     </Box>
   );
 }
+
+export const UserMessage = memo(UserMessageInner);

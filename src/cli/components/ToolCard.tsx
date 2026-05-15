@@ -77,8 +77,7 @@ export function ToolCard({ card, focused }: ToolCardProps) {
   }
 
   const resultText  = card.result ?? "(no output)";
-  const resultLines = resultText.split("\n").slice(0, 40);
-  const truncated   = resultText.split("\n").length > 40;
+  const resultLines = resultText.split("\n");
 
   return (
     <Box marginLeft={2} flexDirection="column" marginBottom={1}>
@@ -97,7 +96,6 @@ export function ToolCard({ card, focused }: ToolCardProps) {
           {resultLines.map((line, i) => (
             <Text key={i} color="grey">{line}</Text>
           ))}
-          {truncated && <Text color="grey">{"… (truncated)"}</Text>}
         </Box>
       )}
     </Box>

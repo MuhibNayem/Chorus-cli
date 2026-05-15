@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { Box, Text } from "ink";
 import type { FeedEntry } from "../state/feedReducer.js";
 import { ThinkingBlock } from "./ThinkingBlock.js";
@@ -7,7 +8,7 @@ import { SubagentCard } from "./SubagentCard.js";
 import { useCursor } from "../hooks/useSpinner.js";
 
 type TurnEntry = Extract<FeedEntry, { kind: "turn" }>;
-const MAX_RESPONSE_DISPLAY_CHARS = 8000;
+// No fixed display limit — terminal scrolls naturally
 
 interface AgentTurnProps {
   entry: TurnEntry;
@@ -16,7 +17,7 @@ interface AgentTurnProps {
   focusedId?: string | null;
 }
 
-export function AgentTurn({ entry, onToggle, isLive = false, focusedId = null }: AgentTurnProps) {
+function AgentTurnInner({ entry, onToggle, isLive = false, focusedId = null }: AgentTurnProps) {
   // Collect expandable item ids in stream order
   const expandableIds: string[] = [];
   for (const ev of entry.events) {
@@ -97,15 +98,11 @@ export function AgentTurn({ entry, onToggle, isLive = false, focusedId = null }:
         if (ev.kind === "response") {
           const text = ev.text;
           const isLastEvent = i === entry.events.length - 1;
-          const omittedChars = Math.max(0, text.length - MAX_RESPONSE_DISPLAY_CHARS);
-          const displayText = omittedChars > 0
-            ? `... ${omittedChars.toLocaleString()} earlier chars hidden while rendering; full text remains in session history ...\n${text.slice(-MAX_RESPONSE_DISPLAY_CHARS)}`
-            : text;
           if (!text) return null;
           return (
             <Box key={`resp-${i}`} marginLeft={2}>
               <Text wrap="wrap">
-                {displayText}
+                {text}
                 {isStreamingResponse && isLastEvent ? cursor : ""}
               </Text>
             </Box>
@@ -122,6 +119,8 @@ export function AgentTurn({ entry, onToggle, isLive = false, focusedId = null }:
     </Box>
   );
 }
+
+export const AgentTurn = memo(AgentTurnInner);
 
 function WaitingIndicator() {
   const cursor = useCursor(true, 1);
