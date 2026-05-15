@@ -1,71 +1,154 @@
-# Chorus
+<div align="center">
 
-**The most flexible, sophisticated AI coding agent harness in the terminal.**
+![Node.js](https://img.shields.io/badge/Node.js-20%2B-brightgreen?style=flat-square)
+[![npm](https://img.shields.io/npm/v/chorus-agent-cli.svg?style=flat-square)](https://www.npmjs.com/package/chorus-agent-cli)
+[![License](https://img.shields.io/github/license/anomalyco/chorus-cli.svg?style=flat-square)](./LICENSE)
+[![Tests](https://img.shields.io/badge/tests-392%20passed-brightgreen?style=flat-square)]()
 
-Chorus is a high-performance, local-first interactive coding agent for production software engineering. It runs as a terminal UI with a React-powered interface (Ink), supports any LLM provider, and packs a full multi-agent orchestration layer, adaptive skill runtime, MCP integration, and enterprise-grade security.
+**The most powerful open-source AI coding agent for the terminal.**
 
----
+Multi-agent swarms · Adaptive skill learning · MCP with OAuth · Side-channel conversations · Message queuing · AI-assisted agent creation
 
-## Why Chorus
-
-| Capability | Chorus | Claude Code | Cursor | Qwen Code |
-|---|---|---|---|---|
-| **Terminal TUI** | ✅ Ink/React | ✅ | ❌ | ✅ |
-| **Multi-provider LLM** | ✅ OpenAI, Anthropic, DeepSeek, Ollama, vLLM | Anthropic only | Multi-model | Qwen-optimized |
-| **Local-first / offline** | ✅ Ollama native | ❌ | ❌ | ❌ |
-| **Multi-agent swarms** | ✅ 4 presets + DAG graphs | SDK subagents | ❌ | Subagents |
-| **Adaptive skill runtime** | ✅ Auto-synthesized patterns | Skills | Skills | Skills |
-| **MCP (Model Context Protocol)** | ✅ Full OAuth, encrypted storage | ✅ | ✅ | ✅ |
-| **AI-assisted agent creator** | ✅ Natural language → agent | ❌ | ❌ | ❌ |
-| **SWE-bench evals** | ✅ Built-in scorer | ❌ | ❌ | ❌ |
-| **Open source** | ✅ MIT | ❌ | ❌ | Apache 2.0 |
+</div>
 
 ---
+
+## What is Chorus
+
+Chorus is an agentic coding tool that lives in your terminal. It understands your codebase, runs commands, edits files, searches the web, and orchestrates multi-agent teams — all through natural language. It's MIT-licensed, provider-agnostic, and optimized for real development workflows.
+
+Unlike other tools, Chorus stays out of your way:
+
+- **The agent never blocks you.** Send messages while it works — they queue and process in order. Ask side questions with `/btw` without interrupting the main task. Press `Esc` to stop anything, anytime.
+- **Your credentials stay encrypted.** MCP OAuth tokens use AES-256-GCM. No plaintext secrets in config files.
+- **You can run it on any LLM.** OpenAI, Anthropic, DeepSeek, Ollama, vLLM — switch providers with `/model`.
 
 ## Quick Start
 
 ```bash
-# Requires Node.js >= 20
-npm install
-npm run dev
+# Requirements: Node.js >= 20 (optional: Ollama for local-only)
+npm install -g chorus-agent-cli
+cd your-project/
+chorus
 ```
 
-Chorus auto-detects provider keys from environment variables (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `DEEPSEEK_API_KEY`). Falls back to local Ollama if no cloud keys are set.
+Chorus auto-detects API keys from your environment. Falls back to local Ollama if no cloud keys are set.
 
-For production use:
+```
+OPENAI_API_KEY=sk-...         # OpenAI
+ANTHROPIC_API_KEY=sk-ant-...  # Anthropic
+DEEPSEEK_API_KEY=sk-...       # DeepSeek
+```
+
+On first run, configure a provider: `chorus` → `/new-provider` (interactive wizard).
+
+## Why Chorus
+
+### 1. Operator stays in control — always
+
+Other tools block your input or cancel your task when you type during agent execution. Chorus gives you three ways to interact mid-task:
+
+| Action | Key | Behavior |
+|---|---|---|
+| **Stop agent** | `Esc` | Immediate, non-destructive abort. Work done so far is preserved. |
+| **Send next task** | Type + `Enter` | Message queues. Auto-processed after current turn. |
+| **Ask side question** | `/btw <q>` | Answered in a dedicated panel without polluting the main conversation. |
+
+No other tool offers all three. Claude Code's Esc is broken ([#49309](https://github.com/anthropics/claude-code/issues/49309)), its message queue flushes at the wrong time ([#49373](https://github.com/anthropics/claude-code/issues/49373)), and its `/btw` is single-turn with no tools. Cursor reverts all changes on interrupt. Qwen Code has no queue or side channel at all.
+
+### 2. AI-assisted agent creation
+
+Describe an agent in plain English — Chorus generates the complete definition using your configured LLM. Review, edit, or regenerate. Then invoke with `@agent-name`.
+
+```
+/agents → g → "A security auditor for OWASP Top 10, with severity ratings and fix suggestions"
+
+Result:
+  Name:        security-auditor
+  Description: Security auditor for OWASP Top 10 vulnerability review
+  System Prompt:
+    ## Role
+    You are a security auditor...
+    ## Responsibilities
+    - Review code for OWASP Top 10 vulnerabilities...
+    ## Workflow
+    1. Inspect the codebase...
+  [y] accept  [e] edit manually  [r] regenerate
+```
+
+Full agent editor with tool whitelist, permission modes, model override, and interactive dashboard (`/agents`).
+
+### 3. MCP done right
+
+Chorus has the most complete MCP integration of any CLI coding tool:
+
+- **All transport types**: stdio, Streamable HTTP, SSE (legacy)
+- **All auth methods**: bearer tokens, OAuth2 client credentials, OAuth2 authorization code (browser login with PKCE)
+- **Encrypted storage**: AES-256-GCM at `~/.chorus/mcp-auth.json`
+- **Health monitoring**: 30-second pings with auto-reconnect and 3-strike circuit breaker
+- **Interactive management**: `/mcp` dashboard, `/mcp-add` 14-step wizard, `/mcp-auth` OAuth flow
+- **Trust system**: project `.mcp.json` files are content-hash verified
+
 ```bash
-npm run build && npm start
+# Add a server from CLI
+chorus mcp add MiniMax --type stdio --command uvx --arg minimax-coding-plan-mcp --arg -y \
+  --env MINIMAX_API_KEY=sk-xxx --env MINIMAX_API_HOST=https://api.minimax.io
+
+# Start OAuth browser flow
+chorus mcp auth linear-server
+
+# Or use the TUI wizard
+/mcp-add
 ```
+
+### 4. Multi-agent swarms
+
+Orchestrate teams of specialized agents that collaborate on complex tasks:
+
+```bash
+/swarm plan-build-review "Implement OAuth2 login with refresh tokens"
+/swarm research-parallel "Compare React Server Components vs traditional SSR"
+/swarm vapt-report "Scan the authentication module for vulnerabilities"
+```
+
+Four built-in presets with DAG parallel execution, handoff-based sequential flows, shared artifact storage, worktree isolation, and cost management with circuit breakers.
+
+### 5. Adaptive skill runtime
+
+Chorus learns from your workflows. When you repeat similar tool patterns across sessions, the synthesizer auto-creates reusable skills. The router selects relevant skills per-turn using semantic matching. Underperforming skills are automatically annealed.
 
 ---
 
-## Core Features
+## Features
 
-### AI Coding Agent
+### Core Agent Loop
+- Turn-based tool-calling with streaming responses and reasoning display
+- Expandable thinking blocks and tool cards (`Tab` cycle, `Space` toggle)
+- Context window tracking with visual usage bar
+- Auto-compaction at 85% token threshold
+- Large tool output offload (>8KB → disk)
 
-The main agent loop runs a turn-based tool-calling cycle with streaming responses, reasoning display, and interactive tool cards:
+### Tools
+| Category | Tools |
+|---|---|
+| **Filesystem** | `file_read`, `file_write`, `file_edit`, `list_dir`, `find_files`, `search_files` |
+| **Shell** | `run_command` (allowlisted: git, npm, node, python, cargo, etc.) |
+| **Git** | `git_status`, `git_diff`, `git_log`, `git_branch`, `git_commit` |
+| **Web** | `internet_search` (Serper), `web_search` (Google CSE), `web_fetch` |
+| **MCP** | All tools from connected MCP servers (namespaced: `mcp__<server>__<tool>`) |
+| **Sub-agents** | `delegate_to_subagent` (planner, builder, vapt) |
 
-- **Tool arsenal**: filesystem (read/write/edit/list), git (status/diff/log/branch/commit), shell commands, web search (Serper/Google CSE), web fetch, todo management
-- **Streaming UI**: real-time thinking blocks (expandable with `Space`), tool cards with args/results (collapsible), Tab navigation to cycle focus
-- **Context window tracking**: live token counter, percentage bar, model-aware context limits
-- **Auto-compaction**: summarization middleware offloads history when tokens exceed 85% of window
-- **Tool output offload**: large tool results (>8KB) moved to disk instead of clogging context
+### Execution Modes & Policies
+| Mode | Behavior |
+|---|---|
+| `BUILD / auto_edit` | Auto-approve edits, ask for shell/commit |
+| `BUILD / suggest` | Ask before every tool call |
+| `BUILD / full_auto` | Zero-interruption, all tools auto-approved |
+| `PLAN / read-only` | Filesystem + git reads only, no mutations |
 
-### Execution Modes & Approval Policies
-
-```
-BUILD / auto-edit  ← default: auto-approve edits, ask for shell/commit
-BUILD / suggest     ← ask before every tool call
-PLAN  / read-only   ← filesystem + git reads only, no mutations
-FULL_AUTO           ← zero-interruption mode
-```
-
-Toggle with `Shift+Tab` or `/build` / `/plan` slash commands.
+Toggle with `Shift+Tab` or `/build` `/plan`.
 
 ### Multi-Provider LLM
-
-Switch models on the fly. Configuration stored in `~/.chorus/settings.json`:
-
 ```json
 {
   "llm": {
@@ -75,307 +158,61 @@ Switch models on the fly. Configuration stored in `~/.chorus/settings.json`:
       "openai": { "apiKey": "${OPENAI_API_KEY}", "model": "gpt-4o" },
       "anthropic": { "apiKey": "${ANTHROPIC_API_KEY}", "model": "claude-sonnet-4-20250514" },
       "ollama": { "baseUrl": "http://localhost:11434/v1", "model": "qwen3-coder:latest" }
+    },
+    "modes": {
+      "build": { "provider": "deepseek", "model": "deepseek-v4-flash" },
+      "plan": { "provider": "deepseek", "model": "deepseek-v4-flash" }
     }
   }
 }
 ```
 
-- **Per-mode model selection**: different models for `build` vs `plan` modes
-- **Per-agent model override**: custom agents can pin specific models (e.g., `openai:gpt-4o`)
-- **Interactive provider/model picker**: `/model` slash command with arrow-key navigation
-- **Session-level overrides**: temporary model switches that don't touch saved config
+Switch interactively: `/model`, `/provider`, `/default-model`.
 
 ### Workspace Intelligence
-
-- **File watching**: glob-based file discovery with `.gitignore` awareness
-- **`@` mentions**: type `@` to autocomplete files or custom agents in chat
-- **Secret protection**: automatic blocking of `.env`, `.pem`, SSH keys, credentials during file read/copy
-- **Workspace confinement**: all filesystem and shell tools restricted to project root
-
----
-
-## Agent System — Create & Invoke Custom Agents
-
-Chorus lets you create, edit, and invoke custom AI agents with specialized system prompts, tool sets, and permission modes.
-
-### AI-Assisted Agent Creator
-
-Describe what you want in plain English — Chorus generates a complete agent definition:
-
-```
-/g → "A security auditor that reviews code for OWASP Top 10 vulnerabilities,
-       provides severity ratings, and suggests specific fixes with line references"
-```
-
-The LLM generates name, description, and a structured system prompt with Role, Responsibilities, Workflow, and Quality Bar sections. Review and accept, edit manually, or regenerate.
-
-### Manual Agent Creator
-
-Full 7-field editor with:
-- **Name**: kebab-case identifier
-- **Description**: one-line summary
-- **System Prompt**: Markdown editor with sections
-- **Model override**: pin `openai:gpt-4o` or any provider:model
-- **Tool whitelist**: checkbox selection from available tools
-- **Permission mode**: `full_auto` / `auto_edit` / `suggest`
-- **Max rounds**: per-turn tool-use limit (default 30)
-
-### Agent Dashboard
-
-```
-◈ Agents  2 defined                    n:new  g:generate  ↑↓:nav  enter:detail  esc:back
-  Name               Model        Source  Description
-▶ security-auditor   default      user    Security auditor for vulnerability review
-  code-reviewer      gpt-4o       user    Expert code reviewer for PRs
-```
-
-- **Keyboard shortcuts**: `n` new manual, `g` AI generate, `↑↓` navigate, `Enter` detail
-- **Detail panel**: view full system prompt, metadata, actions (edit/view/use/delete)
-- **Storage**: agents saved as JSON in `~/.chorus/agents/` (user) or `.chorus/agents/` (project)
-
-### Agent Invocation
-
-Invoke agents directly from chat with `@agent-name` prefix:
-
-```
-@security-auditor review the auth module for vulnerabilities
-```
-
-- Agents appear in `@` autocomplete alongside file mentions
-- The agent's system prompt replaces the default Chorus prompt for that turn
-- Agents can also be spawned as subagents via `delegate_to_subagent` tool
-
----
-
-## Multi-Agent Swarms
-
-Orchestrate teams of specialized agents that collaborate on complex tasks.
-
-### Four Built-in Presets
-
-| Preset | Agents | Flow | Use case |
-|---|---|---|---|
-| `plan-build-review` | coordinator → planner → builder → reviewer | Sequential handoff | Full feature implementation |
-| `research-synthesize` | coordinator → researcher → synthesizer | Handoff-based | Research a topic and produce findings |
-| `vapt-report` | coordinator → scanner → analyst → reporter | Handoff cascade | Security penetration testing |
-| `research-parallel` | researcher-a ∥ researcher-b → synthesizer | DAG parallel | Concurrent research → synthesis |
-
-### How Swarms Work
-
-- **Handoff-based**: coordinator delegates to specialists, each runs independently with its own system prompt and tools
-- **DAG parallel execution**: graph-based swarms run agents in parallel waves, merging results
-- **Artifact system**: agents share data through named key-value artifacts (`set_artifact` / `get_artifact`)
-- **Context modes**: `shared` (full history), `isolated` (own messages only), `filtered` (handoff task only)
-- **Worktree isolation**: agents can run in isolated git worktrees (`isolation: "worktree"`)
-- **Cost management**: per-swarm and per-agent USD budgets with model downgrade under pressure
-- **Circuit breaker**: auto-stop on budget exhaustion, loop detection, or output validation failure
-
-### Launching Swarms
-
-```bash
-/swarm plan-build-review Implement OAuth2 login with refresh tokens
-/swarm research-parallel Compare React Server Components vs traditional SSR
-/swarm vapt-report Scan the authentication module for vulnerabilities
-```
-
-Live progress with agent status cards, handoff transitions, and artifact tracking in the TUI.
-
----
-
-## MCP — Model Context Protocol
-
-Chorus has the most comprehensive MCP integration of any CLI coding agent.
-
-### Transport Support
-
-- **stdio**: local process servers (npx, uvx, python, node)
-- **Streamable HTTP**: remote MCP servers
-- **SSE**: legacy Server-Sent Events
-
-### Authentication Methods
-
-| Method | Use Case | UX |
-|---|---|---|
-| **Bearer token** | API key from env var | `auth: { type: "bearer", tokenEnv: "MY_TOKEN" }` |
-| **Client credentials** | OAuth2 machine-to-machine | Auto token refresh, encrypted storage |
-| **Authorization code** | OAuth2 browser login | `chorus mcp auth <name>` opens browser, PKCE flow |
-| **AWS SigV4** | AWS API Gateway endpoints | Inherits AWS credentials/profile |
-
-### Encrypted Credential Storage
-
-All MCP tokens are stored AES-256-GCM encrypted at `~/.chorus/mcp-auth.json` with a per-machine key (`~/.chorus/.mcp-key`, 0600 permissions). Supports migration from unencrypted legacy stores.
-
-### Interactive MCP UI
-
-- **MCP Dashboard** (`/mcp`): server list with live status, auth state, tool counts. `↑↓` to navigate, `Enter` for detail panel, `a` to start OAuth flow, `e` to toggle enable, `d` to delete.
-- **Server Wizard** (`/mcp-add`): 14-step guided setup covering transport, command/args, env vars (KEY=VALUE pairs), headers, all auth methods, timeout, and max output tokens.
-- **Trust system**: project `.mcp.json` files are content-hash verified before loading. Auto-revoked on changes.
-- **Health monitoring**: 30-second ping-based health checks with auto-reconnection and 3-strike circuit breaker.
-- **Lazy connections**: servers connect on first tool use, not at startup.
-
-### OAuth Browser Flow
-
-```
-chorus mcp auth linear-server
-# → Opens browser to Linear OAuth page
-# → You log in and authorize
-# → Browser redirects to localhost callback
-# → Tokens exchanged via PKCE, stored encrypted
-# → Server connects automatically
-```
-
-In-chat: `/mcp-auth linear-server` works from within the TUI.
-
-### CLI Management
-
-```bash
-chorus mcp list              # All servers, status, auth state
-chorus mcp add <name> ...    # Add server with full options
-chorus mcp auth <name>       # Start OAuth flow
-chorus mcp unauth <name>     # Clear stored tokens
-chorus mcp trust             # Trust workspace .mcp.json
-chorus mcp remove <name>     # Remove user-level server
-```
-
----
-
-## Adaptive Skill Runtime (ASR)
-
-Chorus learns from your workflows. The ASR observes tool call patterns during agent runs and automatically synthesizes reusable skills.
-
-### Three-Layer Architecture
-
-| Layer | What | Example |
-|---|---|---|
-| **L1: Skills** | Human-authored `SKILL.md` files | `.chorus/skills/deploy/SKILL.md` |
-| **L2: Patterns** | Auto-synthesized from repeated trajectories | "run-tests-before-commit-pattern" |
-| **L3: Metaskills** | Skills that manage other skills | Skill curation, annealing, evaluation |
-
-### How It Works
-
-1. Agent runs a task with multiple tool calls (read → edit → test → commit)
-2. After each round, the synthesizer observes the tool trajectory
-3. When ≥3 similar trajectories repeat, a pattern is synthesized
-4. Parameters are extracted from varying fields across trajectories
-5. Patterns are registered and exposed as callable tools
-6. The router selects relevant patterns per-turn based on conversation context
-7. Underperforming patterns are automatically annealed (removed after repeated failures)
-
-### Skill Files
-
-Create `.chorus/skills/<name>/SKILL.md`:
-
-```markdown
----
-description: Deploy to staging
-tags: [deploy, ci]
-when: "package.json exists"
----
-
-# Deploy to Staging
-
-1. Run `npm run build` and confirm success
-2. Run `npm test` and confirm all pass
-3. Run `npm run deploy:staging`
-4. Report the deployment URL
-```
-
-Skills support `when:` conditions (file existence, language detection), token budgets, and declarative workflows.
-
----
-
-## Sub-Agents & Delegation
-
-Three built-in sub-agents the main agent can spawn autonomously:
-
-| Sub-agent | Role | Tools |
-|---|---|---|
-| **planner** | System architect for deep architectural decisions | git tools |
-| **builder** | Senior engineer for production-quality code | git tools |
-| **vapt** | Offensive security researcher | web search |
-
-The main agent sees a `delegate_to_subagent` tool that lists available sub-agents and their capabilities. When the LLM decides a task needs specialized expertise, it spawns a sub-agent with its own system prompt, tools, and context — running as an independent agent loop.
-
-Custom agents defined via `/agents` are also available as sub-agents.
-
----
-
-## Sessions & History
-
-- **Session management**: create, switch, resume, and delete sessions
-- **History persistence**: sessions saved to `~/.chorus/sessions/`
-- **Token tracking**: cumulative input/output token counts per session
-- **Cost estimation**: per-model pricing with running session cost display
-- **Compaction snapshots**: history dumps on compaction to `~/.chorus/history/`
-- **Observability logs**: JSONL run logs in `~/.chorus/runs/`
-
----
-
-## Evals & Benchmarking
-
-Built-in SWE-bench style evaluation framework:
-
-- **Eval runner**: execute test suites against agent outputs
-- **Scorer**: pass/fail scoring with detailed reports
-- **Storage**: eval results persisted as JSON
-
-```bash
-chorus eval run ./tests/evals/auth-security.json
-chorus eval report
-```
-
----
-
-## Debugger (GSD)
-
-Integrated scientific debugging system:
-
-- **Session-based debugging**: hypothesis formulation, evidence collection, root cause analysis
-- **Checkpoint/resume**: save and restore debug state
-- **Structured reports**: findings with severity, location, and fix recommendations
-
----
-
-## Security
-
-- **Workspace confinement**: filesystem + shell tools restricted to project root
-- **Secret detection**: blocks `.env`, `.pem`, `.key`, credentials during reading/copying
-- **Approval gates**: per-tool and per-mode human-in-the-loop approval
-- **MCP trust system**: content-hash verified project configs
-- **Encrypted credential storage**: AES-256-GCM for MCP tokens
-- **Safe defaults**: destructive operations require explicit approval
+- `@` mention autocomplete for files AND custom agents
+- File watching with `.gitignore` awareness
+- Automatic secret detection (`.env`, `.pem`, keys, credentials)
+- Workspace confinement (all tools restricted to project root)
+
+### Sessions
+- Create, switch, resume, delete sessions
+- Auto-persisted to `~/.chorus/sessions/`
+- Token and cost tracking per session
+- Context compaction with history snapshots
 
 ---
 
 ## Slash Commands
 
-```
-/help           Show all commands
-/model          Switch model/provider interactively
-/build          Switch to BUILD mode
-/plan           Switch to PLAN mode (read-only)
-/agents         Agent management dashboard
-/mcp            MCP server status dashboard
-/mcp-add        Add MCP server (interactive wizard)
-/mcp-auth       Start OAuth flow for MCP server
-/mcp-trust      Trust workspace .mcp.json
-/mcp-reload     Reconnect MCP servers
-/swarm          Run multi-agent swarm
-/swarm-stop     Stop running swarm
-/swarm-traces   List swarm trace files
-/swarm-report   Show swarm observability report
-/session        Session management (list/new/switch)
-/config         Configure API keys (Serper, Google CSE, Weather)
-/advisor        Toggle advisor mode
-/add            Add file to context
-/btw            Send mid-task message to running agent
-/memory         View/manage agent memory
-/exit           Exit the CLI
-```
+| Command | Description |
+|---|---|
+| `/help` | Command reference |
+| `/model` | Switch model/provider interactively |
+| `/build`, `/plan` | Toggle execution mode |
+| `/approval` | Set approval policy (`suggest`/`auto_edit`/`full_auto`) |
+| `/agents` | Agent management dashboard |
+| `/mcp` | MCP server status dashboard |
+| `/mcp-add` | Add MCP server (interactive wizard) |
+| `/mcp-auth <name>` | OAuth browser flow for MCP server |
+| `/mcp-trust` | Trust workspace `.mcp.json` |
+| `/mcp-reload` | Reconnect all MCP servers |
+| `/swarm <preset> [task]` | Run multi-agent swarm |
+| `/swarm-stop` | Stop running swarm |
+| `/swarm-traces` | List swarm trace files |
+| `/swarm-report <id>` | Show swarm observability report |
+| `/btw <question>` | Ask a side question (non-interrupting) |
+| `/session` | Session management |
+| `/resume` | Resume a previous session |
+| `/clear` | Clear conversation history |
+| `/compact` | Compact context on next turn |
+| `/config` | Configure API keys (Serper, Google CSE, Weather) |
+| `/advisor` | Toggle advisor mode |
+| `/add <file>` | Add file to context |
+| `/tokens` | Show current token count |
+| `/exit` | Save session and exit |
 
----
-
-## CLI Commands
+### CLI Commands
 
 ```bash
 chorus mcp list|trust|untrust|add|add-json|remove|auth|unauth
@@ -386,27 +223,257 @@ chorus --version
 
 ---
 
-## Project Structure
+## MCP (Model Context Protocol)
+
+### Configuration
+
+Project-level (`<workspace>/.mcp.json`) or user-level (`~/.chorus/settings.json` under `mcp.servers`):
+
+```json
+{
+  "mcpServers": {
+    "Minimax": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": ["minimax-coding-plan-mcp", "-y"],
+      "env": {
+        "MINIMAX_API_KEY": "${MINIMAX_API_KEY}",
+        "MINIMAX_API_HOST": "https://api.minimax.io"
+      }
+    },
+    "linear": {
+      "type": "http",
+      "url": "https://mcp.linear.app/mcp",
+      "auth": {
+        "type": "authorization_code",
+        "clientIdEnv": "LINEAR_CLIENT_ID",
+        "authorizationUrl": "https://linear.app/oauth/authorize",
+        "scope": "read write"
+      }
+    },
+    "sentry": {
+      "type": "http",
+      "url": "https://mcp.sentry.dev/mcp",
+      "auth": { "type": "bearer", "tokenEnv": "SENTRY_MCP_TOKEN" },
+      "maxOutputTokens": 25000
+    }
+  }
+}
+```
+
+### Supported Auth Methods
+
+| Method | Config | UX |
+|---|---|---|
+| **Bearer token** | `auth: { type: "bearer", tokenEnv: "VAR" }` | Reads from env |
+| **Client credentials** | `auth: { type: "client_credentials", clientIdEnv: "VAR", clientSecretEnv: "VAR" }` | Auto-refresh, encrypted |
+| **Authorization code** | `auth: { type: "authorization_code", clientIdEnv: "VAR" }` | Browser login + PKCE |
+| **Headers** | `headers: { "Key": "value" }` | Static headers |
+| **Headers helper** | `headersHelper: "./get-headers.sh"` | Dynamic from command |
+| **envFile** | `envFile: ".env.mcp"` | Load `.env` for stdio servers |
+
+### Encrypted Storage
+All OAuth tokens stored AES-256-GCM encrypted at `~/.chorus/mcp-auth.json`. Encryption key at `~/.chorus/.mcp-key` (0600 perms). Auto-migrates from legacy unencrypted stores.
+
+### Trust System
+Project `.mcp.json` files are content-hash verified. Run `/mcp-trust` after reviewing. Auto-revoked on changes. Bypass with `CHORUS_TRUST_PROJECT_MCP=1`.
+
+---
+
+## Agent System
+
+### AI-Assisted Creation
 
 ```
-src/
-├── agent/          # Core agent loop, middleware, HITL, checkpointer
-├── agents/         # Agent definitions, storage, loader, generator
-├── cli/            # Terminal UI (Ink/React), components, hooks
-├── context/        # Tokenizer, compaction, context cache
-├── evals/          # SWE-bench evaluation framework
-├── harness/        # Orchestrator, verifier, worker engine, protocol
-├── llm/            # Multi-provider abstraction, pricing, context windows
-├── mcp/            # MCP client, auth, config, CLI management
-├── session/        # Session persistence, picker
-├── skills/         # Adaptive skill runtime (ASR)
-├── subagents/      # Built-in sub-agents (planner, builder, vapt)
-├── swarm/          # Multi-agent swarm orchestration
-├── tools/          # Filesystem, git, shell, web search, todos
-├── prompts/        # System prompts
-├── security/       # Secret detection, workspace confinement
-└── settings/       # Configuration persistence, providers
+/agents → g → "A code reviewer that checks for security issues and performance problems"
 ```
+
+The LLM generates name, description, and a structured system prompt with Role, Responsibilities, Workflow, Output Format, Quality Bar, and Constraints sections. Accept (`y`), edit manually (`e`), or regenerate (`r`).
+
+### Manual Editor
+
+Full form with: name, description, system prompt, model override (`provider:model`), tool whitelist (checkbox selection), permission mode, max rounds.
+
+### Dashboard (`/agents`)
+
+Interactive list with `↑↓` navigation, `Enter` for detail panel, `n` for new manual, `g` for AI generate, `e` to edit, `v` to view, `d` to delete, `u` for usage hint.
+
+### Invocation
+
+Prefix messages with `@agent-name`:
+```
+@security-auditor review src/auth for vulnerabilities
+```
+
+Agents appear in `@` autocomplete alongside file mentions. They can also be spawned as sub-agents via `delegate_to_subagent`.
+
+### Storage
+
+User scope: `~/.chorus/agents/<name>.json`  
+Project scope: `<workspace>/.chorus/agents/<name>.json`
+
+---
+
+## Multi-Agent Swarms
+
+### Built-in Presets
+
+| Preset | Agents | Flow | Use Case |
+|---|---|---|---|
+| `plan-build-review` | coordinator → planner → builder → reviewer | Sequential handoff | Full feature implementation |
+| `research-synthesize` | coordinator → researcher → synthesizer | Handoff-based | Research + findings |
+| `vapt-report` | coordinator → scanner → analyst → reporter | Handoff cascade | Security testing |
+| `research-parallel` | researcher-a ∥ researcher-b → synthesizer | DAG parallel | Concurrent research |
+
+### Features
+
+- **Handoff-based** and **DAG parallel** execution models
+- **Artifact system**: `set_artifact` / `get_artifact` / `list_artifacts` for cross-agent data sharing
+- **Context modes**: `shared`, `isolated`, `filtered`
+- **Worktree isolation**: agents can run in isolated git worktrees
+- **Cost management**: per-swarm and per-agent USD budgets with model downgrade
+- **Circuit breaker**: auto-stop on budget exhaustion, loop detection, or validation failure
+
+### Launching
+
+```bash
+/swarm plan-build-review "Implement OAuth2 login"
+/swarm research-parallel "Compare RSC vs traditional SSR"
+/swarm vapt-report "Scan auth module"
+```
+
+---
+
+## Adaptive Skill Runtime
+
+Chorus learns from repeated workflows:
+
+1. **Observes** tool call patterns during agent runs
+2. **Synthesizes** patterns when ≥3 similar trajectories repeat
+3. **Registers** patterns as callable tools with extracted parameters
+4. **Routes** relevant skills per-turn via semantic matching
+5. **Anneal**s underperforming patterns automatically
+
+Skills are defined as Markdown (`SKILL.md`) files with optional `when:` conditions and token budgets.
+
+```
+.chorus/skills/
+├── deploy/
+│   └── SKILL.md      ← "Deploy to staging. Use when deploying..."
+├── pr-review/
+│   └── SKILL.md      ← "Review a PR for quality and security..."
+```
+
+---
+
+## Sub-Agents
+
+Three built-in sub-agents the main agent can spawn autonomously:
+
+| Sub-agent | Role | Tools |
+|---|---|---|
+| **planner** | System architect for architectural decisions | git |
+| **builder** | Senior engineer for production code | git |
+| **vapt** | Offensive security researcher | web search |
+
+The `delegate_to_subagent` tool dynamically lists available sub-agents. Custom agents are also available.
+
+---
+
+## Security
+
+- **Workspace confinement**: filesystem + shell tools restricted to project root
+- **Secret detection**: blocks `.env`, `.pem`, `.key`, `credentials`, SSH keys
+- **MCP trust system**: content-hash verified project configs, auto-revoked on changes
+- **Encrypted credentials**: AES-256-GCM for MCP tokens
+- **Approval gates**: per-tool and per-mode human-in-the-loop (`suggest`/`auto_edit`/`full_auto`)
+- **Shell allowlist**: only approved commands, blocks shell operators and path traversal
+
+---
+
+## Architecture
+
+```
+User Input
+  │
+  ▼
+┌──────────────┐    ┌──────────────────┐
+│  Agent Loop  │───▶│  LLM Provider    │  (OpenAI / Anthropic / DeepSeek / Ollama)
+│              │◀───│  (stream w/tools) │
+│  Middleware  │    └──────────────────┘
+│  · Summarize │
+│  · Offload   │    ┌──────────────────┐
+│  · Skills    │───▶│  Tool Runtime    │
+│  · Todos     │    │  · Filesystem    │
+│  · Observe   │    │  · Git           │
+│              │    │  · Shell         │
+│  HITL Gate   │    │  · Web Search    │
+│              │    │  · MCP Tools     │
+└──────┬───────┘    │  · Sub-agents    │
+       │            └──────────────────┘
+       ▼
+┌──────────────┐
+│  TUI (Ink)   │
+│  · Feed      │
+│  · Input Box │
+│  · StatusBar │
+│  · Side Panel│
+└──────────────┘
+```
+
+---
+
+## Evals & Benchmarks
+
+Built-in SWE-bench style evaluation framework:
+
+```bash
+chorus eval run ./tests/evals/auth-security.json
+chorus eval report
+```
+
+---
+
+## Configuration
+
+**User config**: `~/.chorus/settings.json`  
+**Project MCP config**: `<workspace>/.mcp.json`  
+**Project agents**: `<workspace>/.chorus/agents/*.json`
+
+### Environment Variables
+
+| Variable | Purpose |
+|---|---|
+| `OPENAI_API_KEY` | OpenAI API key |
+| `ANTHROPIC_API_KEY` | Anthropic API key |
+| `DEEPSEEK_API_KEY` | DeepSeek API key |
+| `CHORUS_HOME_DIR` | Override `~/.chorus/` path |
+| `CHORUS_TRUST_PROJECT_MCP` | Skip MCP trust requirement |
+| `MCP_TIMEOUT` | Connection timeout (ms) |
+| `CHORUS_MCP_MAX_OUTPUT_TOKENS` | MCP output cap (default 25000) |
+| `SERPER_API_KEY` | Serper web search |
+| `GOOGLE_CSE_API_KEY` | Google Custom Search |
+| `WEATHER_API_KEY` | Weather API |
+| `DEBUG` | Enable debug logging |
+
+---
+
+## Comparison
+
+| | Chorus | Claude Code | Cursor | Qwen Code |
+|---|---|---|---|---|
+| **Open source** | ✅ MIT | ❌ | ❌ | Apache 2.0 |
+| **Terminal TUI** | ✅ Ink/React | ✅ | GUI only | ✅ |
+| **Any LLM provider** | ✅ All major | Anthropic only | Multi-model | Qwen-optimized |
+| **Esc interrupt** | ✅ Non-destructive abort | Broken (#49309) | Reverts all work | Broken (#2775) |
+| **Message queue** | ✅ Auto-process after turn | Flushes at wrong time (#49373) | None | Requested (#4021) |
+| **`/btw` side channel** | ✅ Full history, multi-turn | Single-turn, no tools | None | None |
+| **Multi-agent swarms** | ✅ 4 presets + DAG graphs | SDK only | None | Subagents |
+| **AI agent creator** | ✅ Natural language → agent | None | None | None |
+| **Adaptive skills** | ✅ Auto-synthesized | Skills | Skills | Skills |
+| **MCP OAuth + encrypt** | ✅ Browser flow + AES-256 | ✅ | ✅ | ✅ |
+| **SWE-bench evals** | ✅ Built-in | ❌ | ❌ | ❌ |
+| **Local-first / offline** | ✅ Ollama native | ❌ | ❌ | ✅ |
 
 ---
 
@@ -418,4 +485,4 @@ src/
 
 ## License
 
-MIT
+MIT © AnomalyCo

@@ -62,7 +62,7 @@ function InputBoxInner({
 }: InputBoxProps) {
   function handleSubmit(submitted: string) {
     const trimmed = submitted.trim();
-    if (!trimmed || disabled) return;
+    if (!trimmed) return;
     onSubmit(trimmed);
   }
 
@@ -74,31 +74,27 @@ function InputBoxInner({
 
       <Box
         borderStyle="round"
-        borderColor={disabled ? "grey" : "cyan"}
+        borderColor={disabled ? "yellow" : "cyan"}
         paddingLeft={1}
         paddingRight={1}
       >
-        {disabled ? (
-          <Text color="grey" dimColor>{"processing…"}</Text>
-        ) : (
-          <Box flexDirection="row">
-            <Text color="cyan" bold>{">"} </Text>
-            {showPaste ? (
-              <Text color="grey" dimColor>
-                {`${value.length} chars  ·  Enter to send`}
-              </Text>
-            ) : (
-              <TextInput
-                key={resetKey}
-                value={value}
-                onChange={onChange}
-                onSubmit={handleSubmit}
-                placeholder={"Send a message or type / for commands…"}
-                focus={!disabled}
-              />
-            )}
-          </Box>
-        )}
+        <Box flexDirection="row">
+          <Text color={disabled ? "yellow" : "cyan"} bold>{disabled ? "/" : ">"} </Text>
+          {showPaste ? (
+            <Text color="grey" dimColor>
+              {`${value.length} chars  ·  Enter to send`}
+            </Text>
+          ) : (
+            <TextInput
+              key={resetKey}
+              value={value}
+              onChange={onChange}
+              onSubmit={handleSubmit}
+              placeholder={disabled ? "/btw note… or /exit" : "Send a message or type / for commands…"}
+              focus
+            />
+          )}
+        </Box>
       </Box>
     </Box>
   );

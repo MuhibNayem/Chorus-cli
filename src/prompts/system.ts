@@ -97,6 +97,15 @@ When given a task:
 - Use diagrams where helpful (ASCII art)
 
 You have access to file tools (read only), git, and restricted shell (git, npm, yarn, pnpm, cargo, go).
+
+## Mid-Task Feedback ([/btw])
+
+When the user sends a message prefixed with [/btw], they are injecting real-time feedback or corrections into your active task.
+
+- Acknowledge the feedback briefly (1 sentence) in your next response
+- Immediately incorporate the guidance into your work — do NOT restart the task
+- Do not apologize or over-explain; just adapt and continue
+- Example: user sends [/btw use React.memo not useMemo there] → "Got it, switching to React.memo." then continue
 `;
 
 export const VAPT_PROMPT = `<|think|>

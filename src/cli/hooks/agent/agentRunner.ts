@@ -62,6 +62,7 @@ export interface AgentRunOptions {
   parentTurnId: string;
   mode?: ExecutionMode;
   approvalPolicy?: ApprovalPolicy;
+  abortSignal?: AbortSignal;
 }
 
 export interface ResumeAgentRunOptions extends AgentRunOptions {
@@ -198,6 +199,7 @@ export async function runAgentStream(
     policy: options.approvalPolicy ?? "auto_edit",
     checkpointer,
     middleware: createDefaultMiddleware(threadId, { contextWindow: getContextWindow(options.modelName) }),
+    abortSignal: options.abortSignal,
   });
   const iterator = stream[Symbol.asyncIterator]();
   dbg("STREAM_OPENED", { msgCount: options.messages.length, toolCount: tools.length });

@@ -99,9 +99,23 @@ export async function processAgentStream(
           dispatch({
             type: "APPEND_SYSTEM",
             id: `btw-${Date.now()}`,
-            text: `Queued mid-task note: ${event.text}`,
+            text: `╭─ /btw ──────────────────────────────\n│ ${event.text}\n╰──────────────────────────────────────`,
           });
           break;
+        case "aborted":
+          dispatch({
+            type: "APPEND_SYSTEM",
+            id: `aborted-${Date.now()}`,
+            text: event.message ?? "Task interrupted by user.",
+          });
+          hadError = false;
+          return {
+            responseText: responseText.trim(),
+            reasoningContent: reasoningContent.trim(),
+            toolCallsObserved,
+            hadError: false,
+            history,
+          };
         case "compacted":
           dispatch({
             type: "APPEND_SYSTEM",

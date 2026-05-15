@@ -32,7 +32,8 @@ export type AgentEvent =
   | { type: "checkpoint"; round: number; threadId: string }
   | { type: "compacted"; removedMessages: number; savedTokens: number }
   | { type: "done"; response: string; reasoning: string; toolCount: number; history: ChatMessage[]; inputTokens: number; outputTokens: number; costUsd: number; durationMs: number }
-  | { type: "error"; message: string; fatal: boolean };
+  | { type: "error"; message: string; fatal: boolean }
+  | { type: "aborted"; message?: string };
 
 export type CheckpointState = {
   messages: ChatMessage[];
@@ -81,4 +82,5 @@ export interface LoopOptions {
   maxRounds?: number;
   resumedDecision?: HitlDecision;
   middleware?: AgentMiddleware[];
+  abortSignal?: AbortSignal;
 }

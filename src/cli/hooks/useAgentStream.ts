@@ -101,7 +101,7 @@ export function useAgentStream({
 
 
   const submit = useCallback(
-    async (text: string) => {
+    async (text: string, abortSignal?: AbortSignal) => {
       if (submittingRef.current) return;
       submittingRef.current = true;
       dbg("SUBMIT", { text: text.slice(0, 80) });
@@ -177,6 +177,7 @@ export function useAgentStream({
           parentTurnId: turnId,
           mode: activeMode,
           approvalPolicy: activeApprovalPolicy,
+          abortSignal,
         });
         if (streamResult.interrupt) {
           activeRunRef.current = streamResult.activeRun ?? null;
@@ -299,5 +300,9 @@ export function useAgentStream({
     messagesRef.current = msgs;
   }, []);
 
-  return { submit, submitBtw, clearHistory, loadSession, pendingApproval, respondToApproval };
+  const getMessages = useCallback((): Message[] => {
+    return messagesRef.current;
+  }, []);
+
+  return { submit, submitBtw, clearHistory, loadSession, getMessages, pendingApproval, respondToApproval };
 }

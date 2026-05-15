@@ -182,6 +182,7 @@ export async function* runAgentLoop(options: LoopOptions): AsyncGenerator<AgentE
     maxRounds = 500,
     resumedDecision,
     middleware = [],
+    abortSignal,
   } = options;
 
   const saved = await checkpointer.load(threadId);
@@ -199,6 +200,10 @@ export async function* runAgentLoop(options: LoopOptions): AsyncGenerator<AgentE
   let totalOutputTokens = 0;
 
   while (round < maxRounds) {
+    if (abortSignal?.aborted) {
+      yield { type: "aborted", message: "Interrupted by user." };
+      return;
+    }
     for (const text of btwQueue.drain()) {
       history.push({ role: "user", content: `[/btw] ${text}` });
       yield { type: "btw", text };

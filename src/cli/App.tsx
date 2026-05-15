@@ -1,5 +1,5 @@
 import { useReducer, useState, useCallback, useEffect, useMemo, useRef } from "react";
-import { Box, useApp, useInput } from "ink";
+import { Box, Text, useApp, useInput } from "ink";
 import { globSync } from "glob";
 import * as fs from "fs";
 import * as path from "path";
@@ -33,6 +33,7 @@ import { ApprovalCard } from "./components/ApprovalCard.js";
 import { McpServerWizard } from "./components/McpServerWizard.js";
 import { McpDashboard } from "./components/McpDashboard.js";
 import { AgentDashboard } from "./components/AgentDashboard.js";
+import { BtwSidePanel, type BtwMessage } from "./components/BtwSidePanel.js";
 import { runSwarm } from "../swarm/orchestrator.js";
 import { buildPresetSwarm } from "../swarm/presets/index.js";
 import { createProvider } from "../llm/registry.js";
@@ -211,6 +212,9 @@ export function App() {
   const [mcpDashboardOpen, setMcpDashboardOpen] = useState(false);
   const [agentDashboardOpen, setAgentDashboardOpen] = useState(false);
   const [agentAiMode, setAgentAiMode] = useState(false);
+  const [btwMessages, setBtwMessages] = useState<BtwMessage[]>([]);
+  const abortRef = useRef<AbortController | null>(null);
+  const [queuedMessages, setQueuedMessages] = useState<string[]>([]);
 
   const showModelSelectForProvider = useCallback((provider: string) => {
     const ps = loadSettings().llm?.providers?.[provider] ?? {};
@@ -473,7 +477,7 @@ export function App() {
 
   const currentSession = sessionManager.getCurrent();
 
-  const { submit, submitBtw, clearHistory, loadSession, pendingApproval, respondToApproval } = useAgentStream({
+  const { submit, submitBtw, clearHistory, loadSession, getMessages, pendingApproval, respondToApproval } = useAgentStream({
     dispatch,
     onTokensUpdate: setTokens,
     initialMessages: currentSession?.messages,
@@ -488,6 +492,28 @@ export function App() {
   const respondToApprovalRef = useRef(respondToApproval);
   pendingApprovalRef.current = pendingApproval;
   respondToApprovalRef.current = respondToApproval;
+
+  // Auto-process queued messages when agent finishes current turn
+  const prevProcessingRef = useRef(feedState.processing);
+  useEffect(() => {
+    const wasProcessing = prevProcessingRef.current;
+    prevProcessingRef.current = feedState.processing;
+    if (wasProcessing && !feedState.processing && queuedMessages.length > 0) {
+      const next = queuedMessages[0];
+      setQueuedMessages((prev) => prev.slice(1));
+      dispatch({ type: "APPEND_SYSTEM", id: `sys-${Date.now()}`, text: `Processing queued message (${queuedMessages.length - 1} remaining)...` });
+      void (async () => {
+        const expanded = expandMentions(next, workspaceFiles.current);
+        const controller = new AbortController();
+        abortRef.current = controller;
+        try {
+          await submit(expanded, controller.signal);
+        } finally {
+          if (abortRef.current === controller) abortRef.current = null;
+        }
+      })();
+    }
+  }, [feedState.processing, queuedMessages.length, dispatch, submit]);
 
   useInput((_input, key) => {
     if (key.ctrl && _input === "c") exit();
@@ -545,6 +571,12 @@ export function App() {
     }
 
     if (key.escape) {
+      if (feedState.processing && abortRef.current) {
+        abortRef.current.abort();
+        abortRef.current = null;
+        dispatch({ type: "APPEND_SYSTEM", id: `sys-${Date.now()}`, text: "Agent interrupted by user." });
+        return;
+      }
       if (activeSuggestions.length > 0 || suggestionIndex >= 0) {
         setSuggestionIndex(-1);
         return;
@@ -1000,9 +1032,65 @@ export function App() {
 
   const handleSubmit = useCallback(
     async (text: string) => {
-      if (feedState.processing) return;
       const trimmed = text.trim();
       if (!trimmed) return;
+
+      // During processing, only allow /btw and /exit to keep the agent responsive
+      if (feedState.processing) {
+        if (trimmed === "/exit") {
+          exit();
+          return;
+        }
+        if (trimmed.startsWith("/btw")) {
+          const btwText = trimmed.slice(4).trim();
+          if (btwText) {
+            const msgId = `btw-${Date.now()}`;
+            const newMsg: BtwMessage = { id: msgId, question: btwText, loading: true };
+            setBtwMessages((prev) => [...prev, newMsg]);
+
+            // Run side-channel query asynchronously
+            const currentMessages = getMessages();
+            void (async () => {
+              try {
+                const { runBtwQuery } = await import("./agent/btwRuntime.js");
+                const result = await runBtwQuery(btwText, currentMessages);
+                setBtwMessages((prev) => prev.map((m) =>
+                  m.id === msgId ? { ...m, response: result.response, loading: false } : m
+                ));
+              } catch (e) {
+                setBtwMessages((prev) => prev.map((m) =>
+                  m.id === msgId ? { ...m, error: e instanceof Error ? e.message : String(e), loading: false } : m
+                ));
+              }
+            })();
+
+            dispatch({
+              type: "APPEND_SYSTEM",
+              id: `sys-${Date.now()}`,
+              text: `Side question queued. Response will appear in the side panel.`,
+            });
+          } else {
+            dispatch({
+              type: "APPEND_SYSTEM",
+              id: `sys-${Date.now()}`,
+              text: "Usage: /btw <your question for the side channel>",
+            });
+          }
+          setInputValue("");
+          return;
+        }
+        // Block other messages while processing — queue them instead
+        if (queuedMessages.length === 0) {
+          dispatch({
+            type: "APPEND_SYSTEM",
+            id: `sys-${Date.now()}`,
+            text: "Agent is working — message queued. Will process when current task completes. Esc to interrupt.",
+          });
+        }
+        setQueuedMessages((prev) => [...prev, trimmed]);
+        setInputValue("");
+        return;
+      }
 
       if (suggestionIndex >= 0 && activeSuggestions.length > 0) {
         const selected = activeSuggestions[suggestionIndex];
@@ -1117,9 +1205,15 @@ export function App() {
       if (handled) return;
 
       const expanded = expandMentions(trimmed, workspaceFiles.current);
-      await submit(expanded);
+      const controller = new AbortController();
+      abortRef.current = controller;
+      try {
+        await submit(expanded, controller.signal);
+      } finally {
+        if (abortRef.current === controller) abortRef.current = null;
+      }
     },
-    [submit, clearHistory, feedState.processing, exit, suggestionIndex, activeSuggestions, slashSuggestions, onResumeSession, onNewSession, displayLabel, sessionProvider, sessionModel, executionMode, approvalPolicy, advisorEnabled, showModelSelectForProvider, showProviderSelect, showResumeSelect, showDefaultProviderSelect, showAgents, showingApiKeysConfig, runSwarmPreset, stopSwarm, listSwarmTraces, showSwarmReport, sendAgentMessage, runShellStream, showFilePicker, showConfirmDialog, getSessionCost]
+    [submit, submitBtw, clearHistory, getMessages, feedState.processing, exit, dispatch, suggestionIndex, activeSuggestions, slashSuggestions, onResumeSession, onNewSession, displayLabel, sessionProvider, sessionModel, executionMode, approvalPolicy, advisorEnabled, showModelSelectForProvider, showProviderSelect, showResumeSelect, showDefaultProviderSelect, showAgents, showingApiKeysConfig, runSwarmPreset, stopSwarm, listSwarmTraces, showSwarmReport, sendAgentMessage, runShellStream, showFilePicker, showConfirmDialog, getSessionCost]
   );
 
   const agentState = useMemo<AgentState>(() => {
@@ -1393,6 +1487,12 @@ export function App() {
           focusedId={focusedId}
         />
       )}
+      {btwMessages.length > 0 && (
+        <BtwSidePanel
+          messages={btwMessages}
+          onDismiss={() => setBtwMessages([])}
+        />
+      )}
       {pendingApproval ? (
         <ApprovalCard approval={pendingApproval} />
       ) : selectionMode ? (
@@ -1419,6 +1519,11 @@ export function App() {
             resetKey={inputKey}
           />
         </>
+      )}
+      {queuedMessages.length > 0 && (
+        <Box paddingLeft={1} paddingRight={1}>
+          <Text color="yellow">{"◈ "}{queuedMessages.length}{" message"}{queuedMessages.length > 1 ? "s" : ""}{" queued — will process after current task"}</Text>
+        </Box>
       )}
       <StatusBar
         modelLabel={displayLabel}
