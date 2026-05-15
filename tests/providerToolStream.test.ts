@@ -192,6 +192,104 @@ describe("OllamaProvider.streamWithTools", () => {
       },
     ]);
   });
+
+  it("sends prior tool calls back to Ollama with object arguments", async () => {
+    const fetchMock = vi.fn(async () =>
+      streamResponse('{"message":{"content":"done"},"done":true}\n'),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const provider = new OllamaProvider({ baseUrl: "http://ollama.test" });
+    await collect(
+      provider.streamWithTools({
+        model: "llama3.1",
+        messages: [
+          { role: "user", content: "Find it" },
+          {
+            role: "assistant",
+            content: "",
+            reasoning_content: "Need search.",
+            tool_calls: [
+              {
+                id: "call_1",
+                type: "function",
+                function: {
+                  name: "internet_search",
+                  arguments: '{"query":"iphone 17"}',
+                },
+              },
+            ],
+          },
+          { role: "tool", tool_call_id: "call_1", content: "result" },
+        ],
+        tools,
+      }),
+    );
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({
+      messages: [
+        { role: "user", content: "Find it" },
+        {
+          role: "assistant",
+          content: "",
+          thinking: "Need search.",
+          tool_calls: [
+            {
+              id: "call_1",
+              type: "function",
+              function: {
+                name: "internet_search",
+                arguments: { query: "iphone 17" },
+              },
+            },
+          ],
+        },
+        { role: "tool", tool_call_id: "call_1", content: "result" },
+      ],
+    });
+  });
+
+  it("accumulates Ollama string tool argument fragments", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        streamResponse(
+          [
+            '{"message":{"tool_calls":[{"function":{"name":"internet_search","arguments":"{\\"query\\":\\"iphone"}}]},"done":false}',
+            '{"message":{"tool_calls":[{"function":{"arguments":" 17\\"}"}}]},"done":false}',
+            '{"done":true}',
+            "",
+          ].join("\n"),
+        ),
+      ),
+    );
+
+    const provider = new OllamaProvider({ baseUrl: "http://ollama.test" });
+    const events = await collect(
+      provider.streamWithTools({
+        model: "llama3.1",
+        messages: [{ role: "user", content: "Find it" }],
+        tools,
+      }),
+    );
+
+    expect(events.at(-1)).toEqual({
+      type: "done",
+      response: {
+        content: "",
+        tool_calls: [
+          {
+            id: "ollama-tool-0",
+            type: "function",
+            function: {
+              name: "internet_search",
+              arguments: '{"query":"iphone 17"}',
+            },
+          },
+        ],
+      },
+    });
+  });
 });
 
 describe("VllmProvider.streamWithTools <think> tag fallback", () => {

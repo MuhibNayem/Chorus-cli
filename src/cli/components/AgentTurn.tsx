@@ -29,7 +29,7 @@ export function AgentTurn({ entry, onToggle, isLive = false, focusedId = null }:
     if (ev.kind === "worker" && ev.card.status !== "running") expandableIds.push(ev.card.id);
   }
   for (const ev of entry.events) {
-    if (ev.kind === "subagent" && ev.card.status !== "running") expandableIds.push(ev.card.id);
+    if (ev.kind === "subagent" && ev.card.sessionId) expandableIds.push(ev.card.id);
   }
 
   // Determine which event is currently "active" (being streamed right now)

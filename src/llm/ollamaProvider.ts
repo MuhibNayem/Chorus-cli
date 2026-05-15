@@ -48,6 +48,20 @@ type OllamaToolAccumulator = {
   arguments: string;
 };
 
+type OllamaOutboundToolCall = {
+  id?: string;
+  type: "function";
+  function: {
+    name: string;
+    arguments: Record<string, unknown>;
+  };
+};
+
+type OllamaOutboundMessage = Omit<ChatMessage, "tool_calls" | "reasoning_content"> & {
+  thinking?: string;
+  tool_calls?: OllamaOutboundToolCall[];
+};
+
 function extractOllamaUsage(chunk: OllamaChatChunk): { inputTokens: number; outputTokens: number } | undefined {
   if (chunk.prompt_eval_count !== undefined || chunk.eval_count !== undefined) {
     return {
@@ -332,26 +346,24 @@ export class OllamaProvider implements LLMProvider {
     }
   }
 
-  private toMessages(input: GenerationRequest): ChatMessage[] {
+  private toMessages(input: GenerationRequest): OllamaOutboundMessage[] {
     const base = input.messages.map((m) => {
-      const msg: ChatMessage = { role: m.role, content: m.content };
-      // Strip reasoning_content from assistant messages before sending to the API.
-      // DeepSeek returns 400 when reasoning_content is included on non-tool-call
-      // assistant messages.  Preserve it only for assistant messages that carry
-      // tool_calls (required for correct context reconstruction).
-      if (
-        m.reasoning_content &&
-        m.role === "assistant" &&
-        m.tool_calls &&
-        m.tool_calls.length > 0
-      ) {
-        msg.reasoning_content = m.reasoning_content;
+      const msg: OllamaOutboundMessage = { role: m.role, content: m.content };
+      if (m.reasoning_content && m.role === "assistant") {
+        msg.thinking = m.reasoning_content;
       }
       if (m.tool_call_id) {
         msg.tool_call_id = m.tool_call_id;
       }
       if (m.tool_calls) {
-        msg.tool_calls = m.tool_calls;
+        msg.tool_calls = m.tool_calls.map((toolCall) => ({
+          id: toolCall.id,
+          type: toolCall.type,
+          function: {
+            name: toolCall.function.name,
+            arguments: this.parseOllamaToolArguments(toolCall.function.arguments),
+          },
+        }));
       }
       return msg;
     });
@@ -378,13 +390,27 @@ export class OllamaProvider implements LLMProvider {
       if (delta.id) current.id = delta.id;
       if (delta.function?.name) current.name = delta.function.name;
       if (delta.function?.arguments !== undefined) {
-        current.arguments =
-          typeof delta.function.arguments === "string"
-            ? delta.function.arguments
-            : JSON.stringify(delta.function.arguments);
+        if (typeof delta.function.arguments === "string") {
+          current.arguments += delta.function.arguments;
+        } else {
+          current.arguments = JSON.stringify(delta.function.arguments);
+        }
       }
       calls.set(index, current);
     }
+  }
+
+  private parseOllamaToolArguments(raw: string): Record<string, unknown> {
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+    } catch {
+      // Fall through to a raw wrapper. The local executor will surface malformed
+      // JSON earlier; this keeps a bad historical call from breaking Ollama's parser.
+    }
+    return { _raw: raw };
   }
 
   private buildModelResponse(

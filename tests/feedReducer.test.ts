@@ -236,6 +236,93 @@ describe("SET_ERROR", () => {
   });
 });
 
+describe("subagent sessions", () => {
+  it("creates a live session when a subagent is added", () => {
+    const state = applyActions([
+      { type: "APPEND_USER", id: "u1", text: "plan this" },
+      {
+        type: "ADD_SUBAGENT",
+        subagent: {
+          id: "sub-1",
+          name: "planner",
+          task: "Plan an API",
+          status: "running",
+          text: "",
+          sessionId: "session-sub-1",
+        },
+      },
+    ]);
+
+    expect(state.sessions["session-sub-1"]).toMatchObject({
+      id: "session-sub-1",
+      name: "planner",
+      type: "subagent",
+      status: "running",
+      parentTurnId: "sub-1",
+      events: [],
+    });
+    const [turn] = getTurns(state);
+    if (turn?.kind === "turn" && turn.events[0]?.kind === "subagent") {
+      expect(turn.events[0].card.sessionId).toBe("session-sub-1");
+      expect(turn.events[0].card.expanded).toBe(false);
+    }
+  });
+
+  it("mirrors subagent response tokens into the child session and parent card", () => {
+    const state = applyActions([
+      { type: "APPEND_USER", id: "u1", text: "plan this" },
+      {
+        type: "ADD_SUBAGENT",
+        subagent: {
+          id: "sub-1",
+          name: "planner",
+          task: "Plan an API",
+          status: "running",
+          text: "",
+          sessionId: "session-sub-1",
+        },
+      },
+      { type: "APPEND_SUBAGENT_TOKEN", id: "session-sub-1", text: "Step 1" },
+      { type: "APPEND_SUBAGENT_TOKEN", id: "session-sub-1", text: " done" },
+    ]);
+
+    expect(state.sessions["session-sub-1"].events).toEqual([
+      { kind: "response", text: "Step 1 done" },
+    ]);
+    const [turn] = getTurns(state);
+    if (turn?.kind === "turn" && turn.events[0]?.kind === "subagent") {
+      expect(turn.events[0].card.text).toBe("Step 1 done");
+    }
+  });
+
+  it("records subagent thinking in the child session", () => {
+    const state = applyActions([
+      { type: "APPEND_USER", id: "u1", text: "plan this" },
+      {
+        type: "ADD_SUBAGENT",
+        subagent: {
+          id: "sub-1",
+          name: "planner",
+          task: "Plan an API",
+          status: "running",
+          text: "",
+          sessionId: "session-sub-1",
+        },
+      },
+      { type: "APPEND_SESSION_THINK_TOKEN", sessionId: "session-sub-1", text: "Need " },
+      { type: "APPEND_SESSION_THINK_TOKEN", sessionId: "session-sub-1", text: "schema" },
+    ]);
+
+    expect(state.sessions["session-sub-1"].events).toMatchObject([
+      {
+        kind: "thinking",
+        text: "Need schema",
+        expanded: true,
+      },
+    ]);
+  });
+});
+
 // ── Swarm reducer tests ───────────────────────────────────────────────────────
 
 describe("SWARM_START", () => {

@@ -92,6 +92,9 @@ export async function executeSubagent(
 
     for await (const event of stream) {
       switch (event.type) {
+        case "thinking":
+          dispatch({ type: "APPEND_SESSION_THINK_TOKEN", sessionId, text: event.text });
+          break;
         case "token":
           responseText += event.text;
           dispatch({ type: "APPEND_SUBAGENT_TOKEN", id: sessionId, text: event.text });
@@ -158,6 +161,7 @@ export async function executeSubagent(
       }
     }
 
+    dispatch({ type: "UPDATE_SUBAGENT", id: subagentId, status: "done", result: responseText });
     dispatch({ type: "FINALIZE_SUBAGENT", id: subagentId, completedAt: Date.now() });
     dispatch({ type: "FINALIZE_SESSION", sessionId, completedAt: Date.now() });
     dbg("SUBAGENT_DONE", { subagentName, responseLength: responseText.length, toolCallsObserved });

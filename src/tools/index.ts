@@ -1,6 +1,7 @@
 import { GitStatusTool, GitDiffTool, GitLogTool, GitBranchTool, GitCommitTool } from "./git.js";
 import { InternetSearchTool, WeatherTool } from "./web-search.js";
 import { shellTools } from "./shell.js";
+import { WriteTodosTool } from "./todos.js";
 
 export const allTools = [
   // DeepAgents provides filesystem tools: ls, read_file, write_file, edit_file, glob, grep.
@@ -16,6 +17,8 @@ export const allTools = [
   // Web
   InternetSearchTool,
   WeatherTool,
+  // Task planning
+  WriteTodosTool,
 ];
 
 export const gitTools = [GitStatusTool, GitDiffTool, GitLogTool, GitBranchTool, GitCommitTool];
@@ -25,3 +28,4 @@ export * from "./git.js";
 export * from "./web-search.js";
 export * from "./filesystem.js";
 export * from "./shell.js";
+export * from "./todos.js";

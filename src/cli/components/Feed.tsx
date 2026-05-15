@@ -1,4 +1,4 @@
-import { Box, Static, Text } from "ink";
+import { Box, Text } from "ink";
 import type { FeedEntry } from "../state/feedReducer.js";
 import { UserMessage } from "./UserMessage.js";
 import { AgentTurn } from "./AgentTurn.js";
@@ -50,38 +50,15 @@ function renderStaticEntry(
 
 export function Feed({
   entries,
-  processing,
+  processing: _processing,
   onToggle,
   onToggleSwarmAgent,
   focusedId,
   focusedSwarmSectionId,
 }: FeedProps) {
-  // Find the last live entry — either an incomplete agent turn or a running
-  // swarm-turn. Everything BEFORE it is frozen in Static; from it onwards
-  // entries render live in document order.
-  let lastTurnIndex = -1;
-  for (let i = entries.length - 1; i >= 0; i--) {
-    const e = entries[i];
-    if (e.kind === "turn" || (e.kind === "swarm-turn" && !e.done)) {
-      lastTurnIndex = i;
-      break;
-    }
-  }
-
-  const staticEntries  = lastTurnIndex > 0 ? entries.slice(0, lastTurnIndex) : [];
-  const dynamicEntries = lastTurnIndex >= 0 ? entries.slice(lastTurnIndex) : entries;
-
   return (
-    <Box flexDirection="column" flexGrow={1} overflow="hidden" justifyContent="flex-end">
-      {/* Entries before the last live entry — rendered once and frozen */}
-      {staticEntries.length > 0 && (
-        <Static items={staticEntries}>
-          {(entry) => renderStaticEntry(entry, onToggle, onToggleSwarmAgent)}
-        </Static>
-      )}
-
-      {/* Last live entry + anything after it — rendered dynamically */}
-      {dynamicEntries.map((entry) => {
+    <Box flexDirection="column" flexGrow={1}>
+      {entries.map((entry) => {
         if (entry.kind === "turn") {
           return (
             <AgentTurn

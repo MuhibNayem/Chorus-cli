@@ -8,12 +8,18 @@ import type { FeedAction } from "../src/cli/state/feedReducer.js";
 class FakeProvider implements LLMProvider {
   readonly name = "ollama" as const;
 
-  constructor(private readonly response: string = "Hello from subagent") {}
+  constructor(
+    private readonly response: string = "Hello from subagent",
+    private readonly thinking: string = "",
+  ) {}
 
   async generate() { return { text: "", model: "fake" }; }
   async *stream(): AsyncIterable<any> { yield { type: "response.completed" as const }; }
 
   async *streamWithTools(_input: { model: string; messages: any[]; systemPrompt?: string; tools: ToolDef[] }): AsyncIterable<ToolStreamEvent> {
+    if (this.thinking) {
+      yield { type: "thinking", text: this.thinking };
+    }
     yield { type: "token", text: this.response };
     yield { type: "done", response: { content: this.response } };
   }
@@ -71,6 +77,27 @@ describe("executeSubagent", () => {
 
     const tokenActions = dispatched.filter((a) => a.type === "APPEND_SUBAGENT_TOKEN");
     expect(tokenActions.length).toBeGreaterThan(0);
+  });
+
+  it("dispatches thinking events during execution", async () => {
+    const dispatched: FeedAction[] = [];
+    const dispatch = (action: FeedAction) => dispatched.push(action);
+
+    await executeSubagent({
+      subagentName: "planner",
+      task: "Think through the API",
+      provider: new FakeProvider("Plan complete", "Need endpoints. "),
+      modelName: "fake-model",
+      dispatch,
+      parentTurnId: "turn-2",
+    });
+
+    expect(dispatched).toContainEqual(
+      expect.objectContaining({
+        type: "APPEND_SESSION_THINK_TOKEN",
+        text: "Need endpoints. ",
+      }),
+    );
   });
 
   it("throws for unknown subagent", async () => {

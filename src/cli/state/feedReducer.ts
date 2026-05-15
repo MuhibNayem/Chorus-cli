@@ -112,6 +112,7 @@ export interface SubagentCardData {
   text: string;
   result?: string;
   sessionId?: string;
+  expanded?: boolean;
 }
 
 // ── Session Types ────────────────────────────────────────────────────────────
@@ -148,6 +149,7 @@ export type FeedAction =
   // Subagent actions
   | { type: "ADD_SUBAGENT"; subagent: SubagentCardData }
   | { type: "APPEND_SUBAGENT_TOKEN"; id: string; text: string }
+  | { type: "APPEND_SESSION_THINK_TOKEN"; sessionId: string; text: string }
   | { type: "UPDATE_SUBAGENT"; id: string; status: "running" | "done" | "error"; result?: string }
   | { type: "FINALIZE_SUBAGENT"; id: string; completedAt: number }
   // Session actions
@@ -367,7 +369,7 @@ export function feedReducer(state: FeedState, action: FeedAction): FeedState {
               return ev;
             }
             if (ev.kind === "subagent" && ev.card.id === action.id) {
-              return ev;
+              return { ...ev, card: { ...ev.card, expanded: !ev.card.expanded } };
             }
             return ev;
           });
@@ -458,12 +460,27 @@ export function feedReducer(state: FeedState, action: FeedAction): FeedState {
     // ── Subagent Actions ──────────────────────────────────────────────────────
 
     case "ADD_SUBAGENT": {
+      const sessionId = action.subagent.sessionId;
+      const session = sessionId
+        ? {
+            [sessionId]: {
+              id: sessionId,
+              name: action.subagent.name,
+              type: "subagent" as const,
+              status: action.subagent.status,
+              events: [],
+              startedAt: Date.now(),
+              parentTurnId: action.subagent.id,
+            },
+          }
+        : {};
       return {
         ...state,
         entries: mapActiveTurn(state.entries, (turn) => {
-          const ev: SubagentEvent = { kind: "subagent", card: action.subagent };
+          const ev: SubagentEvent = { kind: "subagent", card: { ...action.subagent, expanded: false } };
           return { ...turn, events: [...turn.events, ev] };
         }),
+        sessions: { ...state.sessions, ...session },
       };
     }
 
@@ -482,6 +499,16 @@ export function feedReducer(state: FeedState, action: FeedAction): FeedState {
       }
       return {
         ...state,
+        entries: mapActiveTurnEvent(state.entries, session.parentTurnId, (ev) => {
+          if (ev.kind !== "subagent") return ev;
+          return {
+            ...ev,
+            card: {
+              ...ev.card,
+              text: ev.card.text + action.text,
+            },
+          };
+        }),
         sessions: {
           ...state.sessions,
           [action.id]: { ...session, events: newEvents },
@@ -489,7 +516,39 @@ export function feedReducer(state: FeedState, action: FeedAction): FeedState {
       };
     }
 
+    case "APPEND_SESSION_THINK_TOKEN": {
+      const session = state.sessions[action.sessionId];
+      if (!session) return state;
+      const lastEvent = session.events[session.events.length - 1];
+      let newEvents: TurnEvent[];
+      if (lastEvent?.kind === "thinking") {
+        newEvents = [
+          ...session.events.slice(0, -1),
+          { ...lastEvent, text: lastEvent.text + action.text },
+        ];
+      } else {
+        newEvents = [
+          ...session.events,
+          {
+            kind: "thinking",
+            id: `${action.sessionId}-think-${session.events.length}`,
+            text: action.text,
+            expanded: true,
+          },
+        ];
+      }
+      return {
+        ...state,
+        sessions: {
+          ...state.sessions,
+          [action.sessionId]: { ...session, events: newEvents },
+        },
+      };
+    }
+
     case "UPDATE_SUBAGENT": {
+      const sessionId = Object.values(state.sessions).find((s) => s.parentTurnId === action.id)?.id;
+      const session = sessionId ? state.sessions[sessionId] : undefined;
       return {
         ...state,
         entries: mapActiveTurnEvent(state.entries, action.id, (ev) => {
@@ -503,11 +562,22 @@ export function feedReducer(state: FeedState, action: FeedAction): FeedState {
             },
           };
         }),
+        sessions: session
+          ? {
+              ...state.sessions,
+              [session.id]: {
+                ...session,
+                status: action.status,
+                completedAt: action.status === "running" ? undefined : session.completedAt,
+              },
+            }
+          : state.sessions,
       };
     }
 
     case "FINALIZE_SUBAGENT": {
-      const session = state.sessions[action.id];
+      const sessionId = Object.values(state.sessions).find((s) => s.parentTurnId === action.id)?.id;
+      const session = sessionId ? state.sessions[sessionId] : undefined;
       if (!session) return state;
       return {
         ...state,
@@ -517,7 +587,7 @@ export function feedReducer(state: FeedState, action: FeedAction): FeedState {
         }),
         sessions: {
           ...state.sessions,
-          [action.id]: { ...session, status: "done", completedAt: action.completedAt },
+          [session.id]: { ...session, status: "done", completedAt: action.completedAt },
         },
       };
     }

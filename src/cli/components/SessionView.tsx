@@ -23,7 +23,7 @@ export function SessionView({ session, onBack }: SessionViewProps) {
   const emoji = session.type === "worker" ? "🧑‍💻" : "🤖";
 
   return (
-    <Box flexDirection="column" height="100%" overflow="hidden">
+    <Box flexDirection="column" flexGrow={1}>
       {/* Header */}
       <Box flexDirection="row" marginBottom={1} borderStyle="single" paddingX={1}>
         <Text color="blue" bold>{"← "}</Text>
@@ -41,7 +41,7 @@ export function SessionView({ session, onBack }: SessionViewProps) {
         <Text color={statusColor}> {statusIcon}</Text>
       </Box>
 
-      <Box flexDirection="column" flexGrow={1} overflow="hidden">
+      <Box flexDirection="column" flexGrow={1}>
         {session.events.length === 0 && (
           <Box marginLeft={2}>
             <Text color="grey" dimColor>No events yet…</Text>

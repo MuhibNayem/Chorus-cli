@@ -1,5 +1,5 @@
 import { useReducer, useState, useCallback, useEffect, useMemo, useRef } from "react";
-import { Box, useApp, useInput, useStdout } from "ink";
+import { Box, useApp, useInput } from "ink";
 import { globSync } from "glob";
 import * as fs from "fs";
 import * as path from "path";
@@ -90,7 +90,6 @@ function expandMentions(text: string, workspaceFiles: string[]): string {
 
 export function App() {
   const { exit }              = useApp();
-  const { stdout }            = useStdout();
   const [feedState, dispatch] = useReducer(feedReducer, initialFeedState);
   const [tokens, setTokens]   = useState(0);
   const [inputValue, setInputValue] = useState("");
@@ -364,7 +363,7 @@ export function App() {
       if (ev.kind === "worker" && ev.card.status !== "running") ids.push(ev.card.id);
     }
     for (const ev of lastTurn.events) {
-      if (ev.kind === "subagent" && ev.card.status !== "running") ids.push(ev.card.id);
+      if (ev.kind === "subagent" && ev.card.sessionId) ids.push(ev.card.id);
     }
     return ids;
   }, [lastTurn]);
@@ -534,11 +533,16 @@ export function App() {
       return;
     }
 
-    if (key.return && focusedEvent && inputValue === "") {
-      // Enter on a worker/subagent enters its session view
-      const sessionId = focusedEvent.card.sessionId;
-      if (sessionId) setSessionViewId(sessionId);
-      return;
+    if (key.return) {
+      if (isPastePreviewed && inputValue.trim() && !feedState.processing) {
+        void handleSubmit(inputValue);
+        return;
+      }
+      if (focusedEvent && inputValue === "") {
+        const sessionId = focusedEvent.card.sessionId;
+        if (sessionId) setSessionViewId(sessionId);
+        return;
+      }
     }
   });
 
@@ -1055,7 +1059,7 @@ export function App() {
     const session = feedState.sessions[sessionViewId];
     if (session) {
       return (
-        <Box flexDirection="column" height={stdout.rows}>
+        <Box flexDirection="column">
           <SessionView session={session} onBack={() => setSessionViewId(null)} />
           <StatusBar
             modelLabel={displayLabel}
@@ -1072,7 +1076,7 @@ export function App() {
 
   if (agentCreatorOpen) {
     return (
-      <Box flexDirection="column" height={stdout.rows}>
+      <Box flexDirection="column">
         <AgentCreator
           onDone={(msg) => {
             setAgentCreatorOpen(false);
@@ -1093,7 +1097,7 @@ export function App() {
 
   if (agentEditorTarget) {
     return (
-      <Box flexDirection="column" height={stdout.rows}>
+      <Box flexDirection="column">
         <AgentCreator
           initialAgent={agentEditorTarget}
           onDone={(msg) => {
@@ -1115,7 +1119,7 @@ export function App() {
 
   if (agentViewerTarget) {
     return (
-      <Box flexDirection="column" height={stdout.rows}>
+      <Box flexDirection="column">
         <AgentViewer agent={agentViewerTarget} onBack={() => setAgentViewerTarget(null)} />
         <StatusBar
           modelLabel={displayLabel}
@@ -1181,7 +1185,7 @@ export function App() {
   }
 
   return (
-    <Box flexDirection="column" height={stdout.rows}>
+    <Box flexDirection="column">
       {feedState.entries.length === 0 ? (
         <WelcomeScreen
           modelLabel={displayLabel}
