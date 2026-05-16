@@ -1,0 +1,92 @@
+name: Publish to npm
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+  id-token: write
+  packages: write
+  attestations: write
+
+jobs:
+  publish:
+    name: Build, Test & Publish
+    runs-on: ubuntu-latest
+    environment: npm-release
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Verify tag matches version
+        run: |
+          TAG_VERSION=${GITHUB_REF#refs/tags/v}
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "Tag version ($TAG_VERSION) does not match package.json version ($PKG_VERSION)"
+            exit 1
+          fi
+          echo "✓ Version $TAG_VERSION verified"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Run tests
+        run: npm test
+
+      - name: Verify build output
+        run: |
+          test -f dist/index.js || (echo "Missing dist/index.js" && exit 1)
+          test -f dist/index.d.ts || (echo "Missing dist/index.d.ts" && exit 1)
+          echo "✓ Build output verified"
+
+      - name: Generate npm provenance
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Build provenance attestation
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/
+
+      - name: Extract changelog
+        id: changelog
+        run: |
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          if [ -n "$PREV_TAG" ]; then
+            CHANGES=$(git log --pretty=format:"- %s (%h)" $PREV_TAG..HEAD)
+          else
+            CHANGES=$(git log --pretty=format:"- %s (%h)" -20)
+          fi
+          echo "changes<<EOF" >> $GITHUB_OUTPUT
+          echo "$CHANGES" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: v${{ github.ref_name }}
+          body: |
+            ## Changes
+            ${{ steps.changelog.outputs.changes }}
+
+            ## Install
+            ```bash
+            npm install -g chorus-agent-cli@${{ github.ref_name }}
+            ```
+          generate_release_notes: true
+          make_latest: true
