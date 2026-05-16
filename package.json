@@ -41,6 +41,14 @@
     "developer-tools"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MuhibNayem/Chorus-cli.git"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "scripts": {
     "dev": "tsx src/index.ts",
     "build": "rm -rf dist && tsc",
