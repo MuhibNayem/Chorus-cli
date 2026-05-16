@@ -24,6 +24,9 @@ jobs:
           node-version: 22
           cache: npm
 
+      - name: Upgrade npm for Trusted Publishing
+        run: npm i -g npm@latest --force
+
       - name: Verify tag matches version
         run: |
           TAG_VERSION="${GITHUB_REF#refs/tags/v}"
