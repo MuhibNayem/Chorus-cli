@@ -75,7 +75,8 @@ jobs:
       - name: Verify package.json
         run: |
           node -e "
-          const pkg = require('./package.json');
+          const fs = require('fs');
+          const pkg = JSON.parse(fs.readFileSync('package.json','utf8'));
           const required = ['name','version','description','main','types','bin','files','engines','keywords','license'];
           const missing = required.filter(k => !pkg[k]);
           if (missing.length) { console.error('Missing fields:', missing.join(', ')); process.exit(1); }

@@ -33,6 +33,7 @@
     "ink",
     "ai-native"
   ],
+  "license": "MIT",
   "scripts": {
     "dev": "tsx src/index.ts",
     "build": "rm -rf dist && tsc",
