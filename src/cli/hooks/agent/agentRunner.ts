@@ -33,6 +33,8 @@ import { filterToolsForPolicy } from "./toolPolicy.js";
 import type { Dispatch } from "react";
 import type { FeedAction } from "../../state/feedReducer.js";
 import type { ActiveAgentRun, Message } from "./types.js";
+import type { WorkerEventCallback } from "../../../harness/workerEngine.js";
+import type { SubagentEventCallback } from "../../../subagents/runtime.js";
 
 const hitlGate = new HitlGate();
 const checkpointer = new JsonFileCheckpointer();
@@ -49,6 +51,75 @@ function dbg(label: string, data?: unknown): void {
   } catch {
     /* never crash on debug */
   }
+}
+
+function buildWorkerEventAdapter(dispatch: Dispatch<FeedAction>): WorkerEventCallback {
+  return (event) => {
+    switch (event.type) {
+      case "worker-add":
+        dispatch({
+          type: "ADD_WORKER",
+          worker: { id: event.workerId, role: event.role, emoji: event.emoji, color: event.color, status: "running", summary: event.summary, sessionId: event.sessionId },
+        });
+        break;
+      case "worker-thinking":
+        dispatch({ type: "ADD_SESSION_EVENT", sessionId: event.sessionId, event: { kind: "thinking", id: event.id, text: event.text, expanded: event.expanded } });
+        break;
+      case "worker-response":
+        dispatch({ type: "ADD_SESSION_EVENT", sessionId: event.sessionId, event: { kind: "response", text: event.text } });
+        break;
+      case "worker-main-turn-thinking":
+        dispatch({ type: "ADD_THINKING_EVENT_TO_MAIN_TURN", sessionId: event.sessionId, event: { kind: "thinking", id: event.id, text: event.text, expanded: event.expanded } });
+        break;
+      case "worker-session-complete":
+        dispatch({ type: "FINALIZE_SESSION", sessionId: event.sessionId, completedAt: event.completedAt });
+        break;
+      case "worker-update":
+        dispatch({ type: "UPDATE_WORKER", id: event.workerId, status: event.status, result: event.result });
+        break;
+    }
+  };
+}
+
+function buildSubagentEventAdapter(dispatch: Dispatch<FeedAction>): SubagentEventCallback {
+  return (event) => {
+    switch (event.type) {
+      case "subagent-add":
+        dispatch({ type: "ADD_SUBAGENT", subagent: { id: event.subagentId, name: event.name, task: event.task, status: "running", text: "", sessionId: event.sessionId } });
+        break;
+      case "subagent-thinking":
+        dispatch({ type: "ADD_SESSION_EVENT", sessionId: event.sessionId, event: { kind: "thinking", id: event.id, text: event.text, expanded: event.expanded } });
+        break;
+      case "subagent-think-token":
+        dispatch({ type: "APPEND_SESSION_THINK_TOKEN", sessionId: event.sessionId, text: event.text });
+        break;
+      case "subagent-token":
+        dispatch({ type: "APPEND_SUBAGENT_TOKEN", id: event.subagentId, text: event.text });
+        break;
+      case "subagent-tool-start":
+        dispatch({ type: "ADD_SESSION_EVENT", sessionId: event.sessionId, event: { kind: "tool", card: { id: event.id, name: event.name, args: event.args, status: "running", expanded: false } } });
+        break;
+      case "subagent-tool-done":
+        dispatch({ type: "ADD_SESSION_EVENT", sessionId: event.sessionId, event: { kind: "tool", card: { id: event.id, name: event.name, args: {}, result: event.result, status: "done", expanded: false } } });
+        break;
+      case "subagent-tool-error":
+        dispatch({ type: "ADD_SESSION_EVENT", sessionId: event.sessionId, event: { kind: "tool", card: { id: event.id, name: event.name, args: {}, result: event.error, status: "error", expanded: false } } });
+        break;
+      case "subagent-done":
+        dispatch({ type: "UPDATE_SUBAGENT", id: event.subagentId, status: "done", result: event.result });
+        break;
+      case "subagent-finalize":
+        dispatch({ type: "FINALIZE_SUBAGENT", id: event.subagentId, completedAt: event.completedAt });
+        break;
+      case "subagent-session-complete":
+        dispatch({ type: "FINALIZE_SESSION", sessionId: event.sessionId, completedAt: event.completedAt });
+        break;
+      case "subagent-error":
+        dispatch({ type: "ADD_SESSION_EVENT", sessionId: event.sessionId, event: { kind: "response", text: event.text } });
+        dispatch({ type: "UPDATE_SUBAGENT", id: event.subagentId, status: "error", result: event.text });
+        break;
+    }
+  };
 }
 
 export interface HarnessResult {
@@ -103,7 +174,7 @@ async function createRuntimeTools({
   mode = "build",
   approvalPolicy = "auto_edit",
 }: Pick<AgentRunOptions, "provider" | "modelName" | "dispatch" | "parentTurnId" | "mode" | "approvalPolicy">): Promise<AgentTool[]> {
-  const delegateTool = createDelegateTool({ provider, modelName, dispatch, parentTurnId });
+  const delegateTool = createDelegateTool({ provider, modelName, onEvent: buildSubagentEventAdapter(dispatch), parentTurnId });
   const mcpTools = await getMcpTools();
   const buildTools = [...filesystemTools, ...allTools, ...mcpTools, delegateTool];
   return filterToolsForPolicy(buildTools, mode, approvalPolicy) as AgentTool[];
@@ -182,7 +253,7 @@ export async function prepareHarness(
         taskText: text,
         provider: advisorProvider,
         model: advisorModel,
-        dispatch,
+        onEvent: buildWorkerEventAdapter(dispatch),
         parentTurnId: `turn-${Date.now()}`,
       });
 

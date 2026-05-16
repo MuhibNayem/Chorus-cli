@@ -1,14 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { executeWorkers, formatWorkerResults } from "../src/harness/workerEngine.js";
+import type { WorkerEvent } from "../src/harness/workerEngine.js";
 import type { LLMProvider } from "../src/llm/provider.js";
 import type { WorkerAssignment } from "../src/harness/types.js";
-import type { FeedAction } from "../src/cli/state/feedReducer.js";
 
 function createMockProvider(responses: Record<string, string>): LLMProvider {
   return {
     name: "ollama",
     async generate(input) {
-      // Use the system prompt to determine which role this is
       const role = input.systemPrompt?.includes("research analyst")
         ? "researcher"
         : input.systemPrompt?.includes("system architect")
@@ -39,8 +38,8 @@ function createMockProvider(responses: Record<string, string>): LLMProvider {
 
 describe("executeWorkers", () => {
   it("executes multiple workers in parallel", async () => {
-    const dispatched: FeedAction[] = [];
-    const dispatch = (action: FeedAction) => dispatched.push(action);
+    const events: WorkerEvent[] = [];
+    const onEvent = (e: WorkerEvent) => events.push(e);
 
     const provider = createMockProvider({
       researcher: "## Research Summary\nFound 3 relevant articles.\n## Key Findings\n- Finding 1\n- Finding 2",
@@ -57,7 +56,7 @@ describe("executeWorkers", () => {
       taskText: "Build a login system",
       provider,
       model: "mock-model",
-      dispatch,
+      onEvent,
       parentTurnId: "turn-1",
     });
 
@@ -67,32 +66,31 @@ describe("executeWorkers", () => {
     expect(results[0].findings.length).toBeGreaterThan(0);
     expect(results[0].durationMs).toBeGreaterThanOrEqual(0);
 
-    // Verify dispatch actions
-    const addWorkerActions = dispatched.filter((a) => a.type === "ADD_WORKER");
-    expect(addWorkerActions).toHaveLength(2);
+    const addWorkerEvents = events.filter((e) => e.type === "worker-add");
+    expect(addWorkerEvents).toHaveLength(2);
 
-    const updateWorkerActions = dispatched.filter((a) => a.type === "UPDATE_WORKER");
-    expect(updateWorkerActions).toHaveLength(2);
-    expect(updateWorkerActions.every((a) => "status" in a && (a as { status: string }).status === "done")).toBe(true);
+    const updateWorkerEvents = events.filter((e) => e.type === "worker-update");
+    expect(updateWorkerEvents).toHaveLength(2);
+    expect(updateWorkerEvents.every((e) => "status" in e && e.status === "done")).toBe(true);
   });
 
   it("returns empty array for no assignments", async () => {
-    const dispatched: FeedAction[] = [];
+    const events: WorkerEvent[] = [];
     const results = await executeWorkers({
       assignments: [],
       taskText: "test",
       provider: createMockProvider({}),
       model: "mock-model",
-      dispatch: (a) => dispatched.push(a),
+      onEvent: (e) => events.push(e),
       parentTurnId: "turn-1",
     });
 
     expect(results).toHaveLength(0);
-    expect(dispatched).toHaveLength(0);
+    expect(events).toHaveLength(0);
   });
 
   it("handles worker failures gracefully", async () => {
-    const dispatched: FeedAction[] = [];
+    const events: WorkerEvent[] = [];
     const failingProvider: LLMProvider = {
       name: "ollama",
       async generate() { throw new Error("Network error"); },
@@ -110,7 +108,7 @@ describe("executeWorkers", () => {
       taskText: "Build a login system",
       provider: failingProvider,
       model: "mock-model",
-      dispatch: (a) => dispatched.push(a),
+      onEvent: (e) => events.push(e),
       parentTurnId: "turn-1",
     });
 
@@ -118,9 +116,9 @@ describe("executeWorkers", () => {
     expect(results[0].summary).toContain("failed");
     expect(results[0].summary).toContain("Network error");
 
-    const updateActions = dispatched.filter((a) => a.type === "UPDATE_WORKER");
-    expect(updateActions).toHaveLength(1);
-    expect((updateActions[0] as { status: string }).status).toBe("error");
+    const updateEvents = events.filter((e) => e.type === "worker-update");
+    expect(updateEvents).toHaveLength(1);
+    expect((updateEvents[0] as Extract<WorkerEvent, { type: "worker-update" }>).status).toBe("error");
   });
 });
 

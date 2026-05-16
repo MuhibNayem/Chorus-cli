@@ -1,20 +1,95 @@
-import type { Dispatch } from "react";
 import type { LLMProvider } from "../llm/provider.js";
 import { BtwQueue } from "../agent/btw.js";
 import { JsonFileCheckpointer } from "../agent/checkpointer.js";
 import { HitlGate } from "../agent/hitl.js";
 import { runAgentLoop } from "../agent/loop.js";
-import type { FeedAction } from "../cli/state/feedReducer.js";
 import { getAllSubagents } from "./index.js";
+
+// ── Subagent event types (replaces Dispatch<FeedAction>) ──────────────────────
+
+export type SubagentEvent =
+  | {
+      type: "subagent-add";
+      subagentId: string;
+      name: string;
+      task: string;
+      status: "running";
+      sessionId: string;
+    }
+  | {
+      type: "subagent-thinking";
+      sessionId: string;
+      id: string;
+      text: string;
+      expanded: boolean;
+    }
+  | {
+      type: "subagent-think-token";
+      sessionId: string;
+      text: string;
+    }
+  | {
+      type: "subagent-token";
+      subagentId: string;
+      text: string;
+    }
+  | {
+      type: "subagent-tool-start";
+      sessionId: string;
+      id: string;
+      name: string;
+      args: Record<string, unknown>;
+    }
+  | {
+      type: "subagent-tool-done";
+      sessionId: string;
+      id: string;
+      name: string;
+      result: string;
+    }
+  | {
+      type: "subagent-tool-error";
+      sessionId: string;
+      id: string;
+      name: string;
+      error: string;
+    }
+  | {
+      type: "subagent-done";
+      subagentId: string;
+      result: string;
+    }
+  | {
+      type: "subagent-finalize";
+      subagentId: string;
+      completedAt: number;
+    }
+  | {
+      type: "subagent-session-complete";
+      sessionId: string;
+      completedAt: number;
+    }
+  | {
+      type: "subagent-error";
+      sessionId: string;
+      text: string;
+      subagentId: string;
+    };
+
+export type SubagentEventCallback = (event: SubagentEvent) => void;
+
+// ── Options ───────────────────────────────────────────────────────────────────
 
 export interface SubagentExecutionOptions {
   subagentName: string;
   task: string;
   provider: LLMProvider;
   modelName: string;
-  dispatch: Dispatch<FeedAction>;
+  onEvent: SubagentEventCallback;
   parentTurnId: string;
 }
+
+// ── Debug helper ──────────────────────────────────────────────────────────────
 
 function dbg(label: string, data?: unknown): void {
   if (process.env.DEBUG !== "1") return;
@@ -29,42 +104,40 @@ function dbg(label: string, data?: unknown): void {
   }
 }
 
+// ── Execution ─────────────────────────────────────────────────────────────────
+
 export async function executeSubagent(
-  options: SubagentExecutionOptions
+  options: SubagentExecutionOptions,
 ): Promise<string> {
-  const { subagentName, task, provider, modelName, dispatch, parentTurnId } = options;
+  const { subagentName, task, provider, modelName, onEvent, parentTurnId } = options;
 
   const allAgents = getAllSubagents();
   const subagent = allAgents.find((s) => s.name === subagentName);
   if (!subagent) {
-    throw new Error(`Unknown subagent: ${subagentName}. Available: ${allAgents.map((s) => s.name).join(", ")}`);
+    throw new Error(
+      `Unknown subagent: ${subagentName}. Available: ${allAgents.map((s) => s.name).join(", ")}`,
+    );
   }
 
   const subagentId = `subagent-${subagentName}-${Date.now()}`;
   const sessionId = `session-${subagentId}`;
   const threadId = `${sessionId}-thread`;
 
-  dispatch({
-    type: "ADD_SUBAGENT",
-    subagent: {
-      id: subagentId,
-      name: subagentName,
-      task: task.slice(0, 200),
-      status: "running",
-      text: "",
-      sessionId,
-    },
+  onEvent({
+    type: "subagent-add",
+    subagentId,
+    name: subagentName,
+    task: task.slice(0, 200),
+    status: "running",
+    sessionId,
   });
 
-  dispatch({
-    type: "ADD_SESSION_EVENT",
+  onEvent({
+    type: "subagent-thinking",
     sessionId,
-    event: {
-      kind: "thinking",
-      id: `${sessionId}-think-0`,
-      text: `Delegating to ${subagentName} subagent…`,
-      expanded: false,
-    },
+    id: `${sessionId}-think-0`,
+    text: `Delegating to ${subagentName} subagent…`,
+    expanded: false,
   });
 
   dbg("SUBAGENT_START", { subagentName, task: task.slice(0, 100) });
@@ -93,62 +166,39 @@ export async function executeSubagent(
     for await (const event of stream) {
       switch (event.type) {
         case "thinking":
-          dispatch({ type: "APPEND_SESSION_THINK_TOKEN", sessionId, text: event.text });
+          onEvent({ type: "subagent-think-token", sessionId, text: event.text });
           break;
         case "token":
           responseText += event.text;
-          dispatch({ type: "APPEND_SUBAGENT_TOKEN", id: sessionId, text: event.text });
+          onEvent({ type: "subagent-token", subagentId: sessionId, text: event.text });
           break;
         case "tool-start":
           toolCallsObserved += 1;
-          dispatch({
-            type: "ADD_SESSION_EVENT",
+          onEvent({
+            type: "subagent-tool-start",
             sessionId,
-            event: {
-              kind: "tool",
-              card: {
-                id: event.id,
-                name: event.name,
-                args: event.args,
-                status: "running",
-                expanded: false,
-              },
-            },
+            id: event.id,
+            name: event.name,
+            args: event.args,
           });
           dbg("SUBAGENT_TOOL_START", { sessionId, name: event.name });
           break;
         case "tool-done":
-          dispatch({
-            type: "ADD_SESSION_EVENT",
+          onEvent({
+            type: "subagent-tool-done",
             sessionId,
-            event: {
-              kind: "tool",
-              card: {
-                id: event.id,
-                name: event.name,
-                args: {},
-                result: event.result,
-                status: "done",
-                expanded: false,
-              },
-            },
+            id: event.id,
+            name: event.name,
+            result: event.result,
           });
           break;
         case "tool-error":
-          dispatch({
-            type: "ADD_SESSION_EVENT",
+          onEvent({
+            type: "subagent-tool-error",
             sessionId,
-            event: {
-              kind: "tool",
-              card: {
-                id: event.id,
-                name: event.name,
-                args: {},
-                result: event.error,
-                status: "error",
-                expanded: false,
-              },
-            },
+            id: event.id,
+            name: event.name,
+            error: event.error,
           });
           break;
         case "done":
@@ -161,23 +211,19 @@ export async function executeSubagent(
       }
     }
 
-    dispatch({ type: "UPDATE_SUBAGENT", id: subagentId, status: "done", result: responseText });
-    dispatch({ type: "FINALIZE_SUBAGENT", id: subagentId, completedAt: Date.now() });
-    dispatch({ type: "FINALIZE_SESSION", sessionId, completedAt: Date.now() });
+    onEvent({ type: "subagent-done", subagentId, result: responseText });
+    onEvent({ type: "subagent-finalize", subagentId, completedAt: Date.now() });
+    onEvent({ type: "subagent-session-complete", sessionId, completedAt: Date.now() });
     dbg("SUBAGENT_DONE", { subagentName, responseLength: responseText.length, toolCallsObserved });
 
     return responseText;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
 
-    dispatch({
-      type: "ADD_SESSION_EVENT",
-      sessionId,
-      event: { kind: "response", text: `Error: ${message}` },
-    });
-    dispatch({ type: "FINALIZE_SUBAGENT", id: subagentId, completedAt: Date.now() });
-    dispatch({ type: "FINALIZE_SESSION", sessionId, completedAt: Date.now() });
-    dispatch({ type: "UPDATE_SUBAGENT", id: subagentId, status: "error", result: message });
+    onEvent({ type: "subagent-error", sessionId, text: `Error: ${message}`, subagentId });
+    onEvent({ type: "subagent-finalize", subagentId, completedAt: Date.now() });
+    onEvent({ type: "subagent-session-complete", sessionId, completedAt: Date.now() });
+    onEvent({ type: "subagent-done", subagentId, result: message });
 
     dbg("SUBAGENT_ERROR", { subagentName, message });
     throw error;

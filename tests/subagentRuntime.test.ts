@@ -2,8 +2,8 @@ import * as fs from "fs";
 import * as path from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { executeSubagent } from "../src/subagents/runtime.js";
+import type { SubagentEvent } from "../src/subagents/runtime.js";
 import type { LLMProvider, ToolDef, ToolStreamEvent } from "../src/llm/provider.js";
-import type { FeedAction } from "../src/cli/state/feedReducer.js";
 
 class FakeProvider implements LLMProvider {
   readonly name = "ollama" as const;
@@ -40,68 +40,65 @@ afterEach(() => {
 
 describe("executeSubagent", () => {
   it("executes a known subagent and returns its response", async () => {
-    const dispatched: FeedAction[] = [];
-    const dispatch = (action: FeedAction) => dispatched.push(action);
+    const events: SubagentEvent[] = [];
+    const onEvent = (e: SubagentEvent) => events.push(e);
 
     const result = await executeSubagent({
       subagentName: "planner",
       task: "Design a new API",
       provider: new FakeProvider("Hello from subagent"),
       modelName: "fake-model",
-      dispatch,
+      onEvent,
       parentTurnId: "turn-1",
     });
 
     expect(result).toBe("Hello from subagent");
 
-    const addActions = dispatched.filter((a) => a.type === "ADD_SUBAGENT");
-    expect(addActions).toHaveLength(1);
-    expect((addActions[0] as { subagent: { name: string } }).subagent.name).toBe("planner");
+    const addEvents = events.filter((e) => e.type === "subagent-add");
+    expect(addEvents).toHaveLength(1);
+    expect((addEvents[0] as Extract<SubagentEvent, { type: "subagent-add" }>).name).toBe("planner");
 
-    const finalizeActions = dispatched.filter((a) => a.type === "FINALIZE_SUBAGENT");
-    expect(finalizeActions).toHaveLength(1);
+    const finalizeEvents = events.filter((e) => e.type === "subagent-finalize");
+    expect(finalizeEvents).toHaveLength(1);
   });
 
   it("dispatches token events during execution", async () => {
-    const dispatched: FeedAction[] = [];
-    const dispatch = (action: FeedAction) => dispatched.push(action);
+    const events: SubagentEvent[] = [];
+    const onEvent = (e: SubagentEvent) => events.push(e);
 
     await executeSubagent({
       subagentName: "vapt",
       task: "Find vulnerabilities",
       provider: new FakeProvider("Scan complete"),
       modelName: "fake-model",
-      dispatch,
+      onEvent,
       parentTurnId: "turn-2",
     });
 
-    const tokenActions = dispatched.filter((a) => a.type === "APPEND_SUBAGENT_TOKEN");
-    expect(tokenActions.length).toBeGreaterThan(0);
+    const tokenEvents = events.filter((e) => e.type === "subagent-token");
+    expect(tokenEvents.length).toBeGreaterThan(0);
   });
 
   it("dispatches thinking events during execution", async () => {
-    const dispatched: FeedAction[] = [];
-    const dispatch = (action: FeedAction) => dispatched.push(action);
+    const events: SubagentEvent[] = [];
+    const onEvent = (e: SubagentEvent) => events.push(e);
 
     await executeSubagent({
       subagentName: "planner",
       task: "Think through the API",
       provider: new FakeProvider("Plan complete", "Need endpoints. "),
       modelName: "fake-model",
-      dispatch,
+      onEvent,
       parentTurnId: "turn-2",
     });
 
-    expect(dispatched).toContainEqual(
-      expect.objectContaining({
-        type: "APPEND_SESSION_THINK_TOKEN",
-        text: "Need endpoints. ",
-      }),
-    );
+    const thinkEvents = events.filter((e) => e.type === "subagent-think-token");
+    expect(thinkEvents.length).toBeGreaterThan(0);
+    expect((thinkEvents[0] as Extract<SubagentEvent, { type: "subagent-think-token" }>).text).toBe("Need endpoints. ");
   });
 
   it("throws for unknown subagent", async () => {
-    const dispatch = () => {};
+    const onEvent = () => {};
 
     await expect(
       executeSubagent({
@@ -109,7 +106,7 @@ describe("executeSubagent", () => {
         task: "Do something",
         provider: new FakeProvider(),
         modelName: "fake-model",
-        dispatch,
+        onEvent,
         parentTurnId: "turn-3",
       })
     ).rejects.toThrow("Unknown subagent");

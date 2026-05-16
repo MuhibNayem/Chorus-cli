@@ -1,20 +1,18 @@
 import { tool } from "../tools/tool.js";
 import { z } from "zod";
 import type { LLMProvider } from "../llm/provider.js";
-import type { Dispatch } from "react";
-import type { FeedAction } from "../cli/state/feedReducer.js";
 import { executeSubagent } from "./runtime.js";
+import type { SubagentEventCallback } from "./runtime.js";
 import { getAllSubagents } from "./index.js";
 
 export function createDelegateTool(options: {
   provider: LLMProvider;
   modelName: string;
-  dispatch: Dispatch<FeedAction>;
+  onEvent: SubagentEventCallback;
   parentTurnId: string;
 }) {
-  const { provider, modelName, dispatch, parentTurnId } = options;
+  const { provider, modelName, onEvent, parentTurnId } = options;
 
-  // Resolve at tool-creation time so the description seen by the LLM is accurate.
   const agents = getAllSubagents();
   const agentNames = agents.map((a) => a.name);
   const agentList = agents
@@ -23,8 +21,6 @@ export function createDelegateTool(options: {
 
   return tool(
     async ({ subagent, task }: { subagent: string; task: string }) => {
-      // Runtime validation — getAllSubagents() may have changed since tool creation
-      // (e.g., hot-reload), so re-check each call.
       const current = getAllSubagents();
       if (!current.some((a) => a.name === subagent)) {
         const available = current.map((a) => a.name).join(", ");
@@ -37,7 +33,7 @@ export function createDelegateTool(options: {
           task,
           provider,
           modelName,
-          dispatch,
+          onEvent,
           parentTurnId,
         });
       } catch (error) {
