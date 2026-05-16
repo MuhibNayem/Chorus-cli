@@ -23,9 +23,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-
-      - name: Upgrade npm for Trusted Publishing
-        run: npm i -g npm@latest --force
+          registry-url: 'https://registry.npmjs.org'
 
       - name: Verify tag matches version
         run: |
@@ -54,6 +52,8 @@ jobs:
 
       - name: Publish to npm
         run: npm publish --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
