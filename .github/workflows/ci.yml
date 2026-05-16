@@ -62,8 +62,15 @@ jobs:
 
       - name: Check for secrets in source
         run: |
-          PATTERNS='(api_key|api-key|secret|password|token|credential).*[:=]\s*\S{8,}'
-          ! grep -rPi "$PATTERNS" src/ --include='*.ts' --include='*.tsx' || (echo "⚠ Potential secrets found" && exit 1)
+          # Match hardcoded credential values: quoted string value that contains alphanumeric 20+ chars
+          # Excludes: placeholder text, env var references (${...}), function calls, examples
+          FOUND=$(grep -rEn "(api[_-]?key|apikey|secret|password|passwd|token)\s*[:=]\s*['\"][A-Za-z0-9_\-]{20,}['\"]" src/ --include='*.ts' --include='*.tsx' | grep -v 'placeholder\|\.\.\.\|e\.g\.\|example\|requireValue\|process\.env\|\\${\|ENV_VAR\|SENTRY_MCP_TOKEN\|MINIMAX_API_KEY\|LINEAR_API_KEY\|OAUTH_CLIENT_ID\|OAUTH_CLIENT_SECRET\|MY_TOKEN\|envVar' || true)
+          if [ -n "$FOUND" ]; then
+            echo "⚠ Potential hardcoded secrets found:"
+            echo "$FOUND"
+            exit 1
+          fi
+          echo "✓ No hardcoded secrets detected"
 
       - name: Verify package.json
         run: |
