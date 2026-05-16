@@ -1,7 +1,7 @@
 import type { Dispatch } from "react";
 import type { FeedAction } from "./state/feedReducer.js";
 import { sessionManager } from "../session/manager.js";
-import { loadSettings, getModeModelConfig } from "../settings/storage.js";
+import { loadSettings, getModeModelConfig, saveSettings } from "../settings/storage.js";
 import type { ApprovalPolicy, ExecutionMode } from "../harness/types.js";
 import { describeApprovalPolicy } from "./hooks/agent/toolPolicy.js";
 import { SWARM_PRESETS } from "../swarm/presets/index.js";
@@ -30,6 +30,9 @@ export interface CommandContext {
   showApiKeysConfig?: () => void;
   showMcpAddWizard?: () => void;
   showMcpDashboard?: () => void;
+  setGoal?: (condition: string) => void;
+  clearGoal?: () => void;
+  getGoal?: () => { condition: string; turns: number; startedAt: number } | null;
   getExecutionMode?: () => ExecutionMode;
   setExecutionMode?: (mode: ExecutionMode) => void;
   getApprovalPolicy?: () => ApprovalPolicy;
@@ -101,17 +104,18 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: "/resume",        description: "Resume a past session (interactive)" },
   { name: "/session-new",   description: "Start a fresh session" },
   // ── Agents ─────────────────────────────────────────────────────────────────
-  { name: "/agents",        description: "List agents or create a new one (interactive)" },
-  { name: "/btw",           description: "Inject a note into the active agent loop between tool rounds" },
-  { name: "/advisor",       description: "Toggle advisor: on | off | status" },
+  { name: "/agents",        description: "Agent dashboard: create, edit, invoke custom agents" },
+  { name: "/btw",           description: "Ask a side question without interrupting the main task" },
+  { name: "/goal",          description: "Set a goal — agent auto-continues until condition is met" },
+  { name: "/advisor",       description: "Configure advisor: on|off|auto|provider|model|status" },
   // ── Swarm ──────────────────────────────────────────────────────────────────
   { name: "/swarm",         description: "Run a multi-agent swarm preset: /swarm <preset> [task]" },
   { name: "/swarm-stop",    description: "Stop the currently running swarm" },
   { name: "/swarm-traces",  description: "List swarm trace files from ~/.chorus/swarm-traces/" },
   { name: "/swarm-report",  description: "Show observability report for a swarm: /swarm-report <swarmId>" },
   // ── MCP ────────────────────────────────────────────────────────────────────
-  { name: "/mcp",           description: "Show MCP server status and configured tools" },
-  { name: "/mcp-add",       description: "Add an MCP server interactively" },
+  { name: "/mcp",           description: "MCP server dashboard (status, auth, tools)" },
+  { name: "/mcp-add",       description: "Add an MCP server (guided wizard)" },
   { name: "/mcp-trust",     description: "Trust this workspace .mcp.json after review" },
   { name: "/mcp-auth",      description: "Start OAuth browser flow: /mcp-auth <server-name>" },
   { name: "/mcp-reload",    description: "Reconnect configured MCP servers" },
@@ -135,9 +139,9 @@ function buildHelpText(): string {
     else if (["/run","/test","/lint"].includes(cmd.name)) group = "Shell";
     else if (["/plan","/build","/mode","/approval","/model","/provider","/default-model","/new-provider","/build-model","/plan-model"].includes(cmd.name)) group = "Mode & Model";
     else if (["/sessions","/session","/resume","/session-new"].includes(cmd.name)) group = "Sessions";
-    else if (["/agents","/btw","/advisor"].includes(cmd.name)) group = "Agents";
+    else if (["/agents","/btw","/goal","/advisor"].includes(cmd.name)) group = "Agents";
     else if (["/swarm","/swarm-stop","/swarm-traces","/swarm-report"].includes(cmd.name)) group = "Swarm";
-    else if (["/mcp","/mcp-add","/mcp-trust","/mcp-reload"].includes(cmd.name)) group = "MCP";
+    else if (["/mcp","/mcp-add","/mcp-trust","/mcp-auth","/mcp-reload"].includes(cmd.name)) group = "MCP";
     else if (["/config","/exit"].includes(cmd.name)) group = "Config";
 
     if (!groups[group]) { groups[group] = []; order.push(group); }
@@ -549,21 +553,82 @@ export function handleSlashCommand(
 
     case "/advisor": {
       const arg = argRaw?.toLowerCase();
-      if (arg === "on") {
-        ctx.setAdvisorEnabled?.(true);
-        ctx.dispatch({ type: "APPEND_SYSTEM", id, text: "Advisor enabled. A senior reviewer will check plans before execution." });
-        return true;
-      }
-      if (arg === "off") {
-        ctx.setAdvisorEnabled?.(false);
-        ctx.dispatch({ type: "APPEND_SYSTEM", id, text: "Advisor disabled. Plans will go straight to execution." });
-        return true;
-      }
       const advisorSettings = loadSettings().llm?.advisor;
-      const status = advisorSettings?.enabled
-        ? `Advisor: ON  (${advisorSettings.provider ?? "default"}:${advisorSettings.model ?? "default"})`
-        : "Advisor: OFF";
-      ctx.dispatch({ type: "APPEND_SYSTEM", id, text: `${status}\nUsage: /advisor on | off` });
+      const enabled = advisorSettings?.enabled ?? false;
+      const provider = advisorSettings?.provider ?? "default";
+      const model = advisorSettings?.model ?? "default";
+      const autoOn = advisorSettings?.autoOnComplexTasks ?? false;
+
+      // Set provider
+      if (arg === "provider" || arg?.startsWith("provider ")) {
+        const providerName = (arg.includes(" ") ? arg.split(" ").slice(1).join(" ") : "").trim() || "default";
+        const s = loadSettings();
+        const p = providerName === "default" ? undefined : providerName;
+        saveSettings({ ...s, llm: { ...s.llm, advisor: { ...s.llm?.advisor, enabled: s.llm?.advisor?.enabled ?? false, provider: p } } });
+        ctx.dispatch({ type: "APPEND_SYSTEM", id, text: `Advisor provider set to: ${p ?? "default (main session model)"}.` });
+        return true;
+      }
+      // Set model
+      if (arg === "model" || arg?.startsWith("model ")) {
+        const modelName = (arg.includes(" ") ? arg.split(" ").slice(1).join(" ") : "").trim() || "default";
+        const s = loadSettings();
+        const m = modelName === "default" ? undefined : modelName;
+        saveSettings({ ...s, llm: { ...s.llm, advisor: { ...s.llm?.advisor, enabled: s.llm?.advisor?.enabled ?? false, model: m } } });
+        ctx.dispatch({ type: "APPEND_SYSTEM", id, text: `Advisor model set to: ${m ?? "default (main session model)"}.` });
+        return true;
+      }
+      // Set auto
+      if (arg === "auto" || arg === "auto on" || arg === "auto true") {
+        ctx.setAdvisorEnabled?.(true);
+        const s = loadSettings();
+        saveSettings({ ...s, llm: { ...s.llm, advisor: { ...s.llm?.advisor, enabled: true, autoOnComplexTasks: true } } });
+        ctx.dispatch({ type: "APPEND_SYSTEM", id, text: `Advisor: AUTO (on complex tasks)` });
+        return true;
+      }
+      if (arg === "auto off" || arg === "auto false") {
+        const s = loadSettings();
+        saveSettings({ ...s, llm: { ...s.llm, advisor: { ...s.llm?.advisor, enabled: s.llm?.advisor?.enabled ?? false, autoOnComplexTasks: false } } });
+        ctx.dispatch({ type: "APPEND_SYSTEM", id, text: "Advisor auto-mode disabled. Use /advisor on to enable manually." });
+        return true;
+      }
+
+      if (arg === "on" || arg === "off") {
+        ctx.setAdvisorEnabled?.(arg === "on");
+        ctx.dispatch({ type: "APPEND_SYSTEM", id, text: `Advisor: ${arg.toUpperCase()}` });
+        return true;
+      }
+
+      // Status display
+      const statusIcon = enabled ? "●" : "○";
+      const statusColor = enabled ? "green" : "grey";
+      const triggerDesc = autoOn
+        ? "Activates automatically for complex tasks (multi-file, refactors, background)"
+        : enabled
+        ? "Runs on every non-trivial task"
+        : "Not running";
+
+      const lines = [
+        `${statusIcon} Advisor ${enabled ? "ENABLED" : "DISABLED"}  ${provider}:${model}`,
+        `   Trigger: ${triggerDesc}`,
+        `   Auto on complex: ${autoOn ? "yes — /advisor auto" : "no"}`,
+        ``,
+        `Commands:`,
+        `  /advisor on    — enable advisor + pre-flight workers`,
+        `  /advisor off   — disable`,
+        `  /advisor auto  — auto-enable only for complex tasks`,
+        ``,
+        `Configuration (~/.chorus/settings.json):`,
+        `  "llm": { "advisor": { "enabled": true, "provider": "openai", "model": "gpt-4o", "autoOnComplexTasks": true } }`,
+        ``,
+        `Workers run as parallel LLM calls before the main agent:`,
+        `  advisor → reviews the plan for risks before execution`,
+        `  planner → proposes implementation strategy`,
+        `  reviewer → evaluates changed surface quality`,
+        `  tester   → suggests verification checks`,
+        `Results appear as expandable thinking blocks in the feed.`,
+      ];
+
+      ctx.dispatch({ type: "APPEND_SYSTEM", id, text: lines.join("\n") });
       return true;
     }
 

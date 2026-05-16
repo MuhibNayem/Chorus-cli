@@ -5,6 +5,7 @@ export * from "./verifier.js";
 export * from "./orchestrator.js";
 export * from "./storage.js";
 export * from "./workerPool.js";
+export * from "./workerEngine.js";
 export * from "./observability.js";
 export * from "./protocol.js";
 export * from "./repoIntelligence.js";

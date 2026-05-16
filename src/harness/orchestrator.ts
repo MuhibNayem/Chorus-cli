@@ -1,6 +1,6 @@
 import { allSubagents } from "../subagents/index.js";
 import { allTools } from "../tools/index.js";
-import { isAdvisorEnabled } from "../settings/storage.js";
+import { isAdvisorEnabled, getAdvisorSettings } from "../settings/storage.js";
 import { buildVerificationCriteria, routeTask } from "./router.js";
 import { buildRuntimePrompt, createContextBundle } from "./contextAssembler.js";
 import { buildExecutionProtocol } from "./protocol.js";
@@ -27,7 +27,12 @@ interface PrepareTaskExecutionInput {
 function createWorkerAssignments(taskId: string, route: TaskRoute, _mode: ExecutionMode): WorkerAssignment[] {
   if (route.path === "direct_agent_path") return [];
 
-  const advisorEnabled = isAdvisorEnabled();
+  const advisorSettings = getAdvisorSettings();
+  const advisorEnabled = isAdvisorEnabled()
+    || (advisorSettings?.autoOnComplexTasks === true
+        && (route.lane === "background_async"
+            || route.lane === "foreground_sync"
+            || route.canParallelize));
 
   const roles: WorkerRole[] =
     route.requiresResearch ? ["researcher", "planner", "reviewer"] :

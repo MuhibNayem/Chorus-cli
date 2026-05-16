@@ -155,6 +155,7 @@ export type FeedAction =
   // Session actions
   | { type: "ADD_SESSION_EVENT"; sessionId: string; event: TurnEvent }
   | { type: "FINALIZE_SESSION"; sessionId: string; completedAt: number }
+  | { type: "ADD_THINKING_EVENT_TO_MAIN_TURN"; sessionId: string; event: TurnEvent }
   | { type: "ADD_USAGE"; inputTokens: number; outputTokens: number; cost: number }
   // Swarm actions
   | { type: "SWARM_START"; swarmId: string; presetName: string; agents: string[]; startedAt: number }
@@ -623,6 +624,17 @@ export function feedReducer(state: FeedState, action: FeedAction): FeedState {
             completedAt: action.completedAt,
           },
         },
+      };
+    }
+
+    case "ADD_THINKING_EVENT_TO_MAIN_TURN": {
+      // Inject a thinking event directly into the active main turn
+      return {
+        ...state,
+        entries: mapActiveTurn(state.entries, (turn) => ({
+          ...turn,
+          events: [...turn.events, action.event],
+        })),
       };
     }
 

@@ -32,10 +32,15 @@ export function verifyTaskCompletion(input: VerifyTaskInput): CompletedTaskExecu
   }
 
   if (input.task.verificationCriteria.some((criterion) => criterion.id === "diff-review")) {
-    const mentionsDiffReview = /\b(diff|git status|git diff|reviewed changes|changed files|no files changed|no file changes)\b/i
-      .test(input.responseText);
-    if (!mentionsDiffReview) {
-      findings.push("The task required diff review, but the final response did not report changed files or explicitly state that no files changed.");
+    // Skip diff review for analysis-only tasks that made no changes
+    if (input.toolCallsObserved === 0) {
+      // No tools called — nothing to diff. Not a failure.
+    } else {
+      const mentionsDiffReview = /\b(diff|git status|git diff|reviewed changes|changed files|no files changed|no file changes)\b/i
+        .test(input.responseText);
+      if (!mentionsDiffReview) {
+        findings.push("The task required diff review, but the final response did not report changed files or explicitly state that no files changed.");
+      }
     }
   }
 

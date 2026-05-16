@@ -7,6 +7,9 @@ import {
   recordTaskStarted,
   saveHarnessRun,
   verifyTaskCompletion,
+  executeWorkers,
+  formatWorkerResults,
+  appendWorkerResultsToPrompt,
 } from "../../../harness/index.js";
 import { allTools } from "../../../tools/index.js";
 import { filesystemTools } from "../../../tools/filesystem.js";
@@ -14,7 +17,7 @@ import { createDelegateTool } from "../../../subagents/delegateTool.js";
 import { buildSystemPrompt } from "../../../prompts/system.js";
 import { countMessagesTokens } from "../../../context/tokenizer.js";
 import { createProvider, getDefaultProvider, getProviderModel, getContextWindow, type ChatMessage, type LLMProvider } from "../../../llm/index.js";
-import { getModeModelConfig } from "../../../settings/storage.js";
+import { getModeModelConfig, getAdvisorSettings } from "../../../settings/storage.js";
 import { sessionManager } from "../../../session/manager.js";
 import { BtwQueue } from "../../../agent/btw.js";
 import { JsonFileCheckpointer } from "../../../agent/checkpointer.js";
@@ -112,7 +115,8 @@ export async function prepareHarness(
   providerName?: string,
   modelName?: string,
   systemPromptOverride?: string,
-  mode: ExecutionMode = "build"
+  mode: ExecutionMode = "build",
+  dispatch?: Dispatch<FeedAction>,
 ): Promise<{
   prepared: ReturnType<typeof prepareTaskExecution>;
   harnessRun: ReturnType<typeof createHarnessRunRecord>;
@@ -159,7 +163,58 @@ export async function prepareHarness(
     model: resolvedModel,
   });
 
-  return { prepared, harnessRun, provider, modelName: resolvedModel };
+  // Execute worker analysis (advisor, planner, etc.) as parallel pre-flight LLM calls
+  let finalRuntimePrompt = prepared.runtimePrompt;
+  if (prepared.workerAssignments.length > 0 && dispatch) {
+    try {
+      const advisorSettings = getAdvisorSettings();
+      let advisorProvider = provider;
+      let advisorModel = resolvedModel;
+      if (advisorSettings?.provider) {
+        advisorProvider = createProvider(advisorSettings.provider);
+      }
+      if (advisorSettings?.model) {
+        advisorModel = advisorSettings.model;
+      }
+
+      const workerResults = await executeWorkers({
+        assignments: prepared.workerAssignments,
+        taskText: text,
+        provider: advisorProvider,
+        model: advisorModel,
+        dispatch,
+        parentTurnId: `turn-${Date.now()}`,
+      });
+
+      if (workerResults.length > 0) {
+        finalRuntimePrompt = appendWorkerResultsToPrompt(
+          prepared.runtimePrompt,
+          workerResults.map((r) => ({
+            workerId: r.workerId,
+            status: "completed" as const,
+            summary: r.summary,
+            findings: r.findings,
+            risks: [],
+            nextActions: [],
+            changedFiles: [],
+            verification: { checksRun: [], checksPending: [] },
+          })),
+        );
+        dbg("WORKERS_DONE", { count: workerResults.length });
+      }
+    } catch (error) {
+      dbg("WORKERS_ERROR", { message: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
+  return {
+    prepared: finalRuntimePrompt !== prepared.runtimePrompt
+      ? { ...prepared, runtimePrompt: finalRuntimePrompt }
+      : prepared,
+    harnessRun,
+    provider,
+    modelName: resolvedModel,
+  };
 }
 
 export async function runAgentStream(

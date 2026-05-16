@@ -18,6 +18,7 @@ interface StatusBarProps {
   maxTokens?: number;
   executionMode?: ExecutionMode;
   approvalPolicy?: ApprovalPolicy;
+  goalStatus?: string;
 }
 
 function tokensToDisplay(n: number): string {
@@ -49,9 +50,10 @@ function StatusBarInner({
   tokens,
   agentState,
   sessionName,
-  maxTokens,
+  maxTokens = DEFAULT_MAX_TOKENS,
   executionMode = "build",
   approvalPolicy = "auto_edit",
+  goalStatus,
 }: StatusBarProps) {
   const isActive = agentState !== "idle" && agentState !== "error";
   const spinner  = useSpinner(isActive);
@@ -79,6 +81,7 @@ function StatusBarInner({
       <Text color="grey">{`/${approvalPolicy.replace("_", "-")}  `}</Text>
       <Text color={STATE_DOT_COLOR[agentState] as any}>{"●"}</Text>
       <Text color="grey">{`  ${stateLabel}  `}</Text>
+      {goalStatus ? <Text color="yellow" dimColor>{goalStatus}  </Text> : null}
       {sessionTag ? <Text color="cyan" dimColor>{sessionTag}</Text> : null}
       <Text color="grey">{`CTX ${percent}%  `}</Text>
       <Text color={barColor as any}>{bar}</Text>

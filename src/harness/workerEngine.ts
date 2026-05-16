@@ -1,5 +1,5 @@
 import type { Dispatch } from "react";
-import type { FeedAction } from "../cli/state/feedReducer.js";
+import type { FeedAction, TurnEvent } from "../cli/state/feedReducer.js";
 import type { LLMProvider } from "../llm/provider.js";
 import type { WorkerAssignment, WorkerRole } from "./types.js";
 import { getWorkerSystemPrompt } from "./workerPrompts.js";
@@ -120,13 +120,25 @@ async function executeSingleWorker(
     const findings = parseFindings(summary);
     const durationMs = Date.now() - startedAt;
 
-    // Add response to worker session
+    // Add response to worker session (for detail view)
     dispatch({
       type: "ADD_SESSION_EVENT",
       sessionId,
       event: {
         kind: "response",
         text: summary,
+      },
+    });
+
+    // Inject worker's full output as an expandable thinking block in the main turn
+    dispatch({
+      type: "ADD_THINKING_EVENT_TO_MAIN_TURN",
+      sessionId,
+      event: {
+        kind: "thinking" as const,
+        id: `${sessionId}-result`,
+        text: `${roleEmoji(role)} ${role} completed in ${durationMs}ms:\n\n${summary}`,
+        expanded: false,
       },
     });
 
@@ -140,7 +152,7 @@ async function executeSingleWorker(
       type: "UPDATE_WORKER",
       id: workerId,
       status: "done",
-      result: `${roleEmoji(role)} ${role} — ${findings.length} finding${findings.length === 1 ? "" : "s"}`,
+      result: `${roleEmoji(role)} ${role} — ${findings.length} finding${findings.length === 1 ? "" : "s"} (${durationMs}ms)`,
     });
 
     return {

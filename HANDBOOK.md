@@ -1,32 +1,6 @@
-# Chorus — The Developer's AI Agent Harness
+# Chorus — User Handbook
 
-The most flexible, sophisticated AI coding agent in the terminal. Full multi-agent orchestration, adaptive skill learning, MCP with OAuth, side-channel conversations, message queuing, and AI-assisted agent creation — all in a React-powered terminal UI.
-
-## Quick Start
-
-```bash
-npm install && npm run dev
-```
-
-Chorus auto-detects provider keys from environment (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `DEEPSEEK_API_KEY`). Falls back to local Ollama if no cloud keys.
-
-Production: `npm run build && npm start`
-
-## Why Chorus
-
-| | Chorus | Claude Code | Cursor | Qwen Code |
-|---|---|---|---|---|
-| **Esc interrupt** | ✅ AbortController, non-destructive | Broken (#36326, #49309) | Reverts work | Ctrl+C broken (#2775) |
-| **Message queue** | ✅ Auto-process after turn | Queues but flushes wrong (#49373) | None | Requested (#4021) |
-| **`/btw` side channel** | ✅ Full history fork, dedicated panel | Single-turn, no tools | None | None |
-| **Operator input during run** | ✅ Queue + /btw + Esc stop | Blocked/broken | Blocked | Blocked |
-| **Terminal TUI** | ✅ Ink/React | ✅ | GUI only | ✅ |
-| **Multi-provider** | ✅ OpenAI, Anthropic, DeepSeek, Ollama, vLLM | Anthropic only | Multi-model | Qwen-optimized |
-| **Multi-agent swarms** | ✅ 4 presets + DAG graphs | SDK subagents | None | Subagents |
-| **Adaptive skill runtime** | ✅ Auto-synthesized patterns | Skills | Skills | Skills |
-| **MCP** | ✅ Full OAuth, encrypted storage, dashboard | ✅ | ✅ | ✅ |
-| **AI agent creator** | ✅ Natural language → agent | None | None | None |
-| **Open source** | ✅ MIT | Proprietary | Proprietary | Apache 2.0 |
+The comprehensive guide to every feature, command, and configuration option.
 
 ---
 
@@ -38,153 +12,184 @@ Chorus runs a turn-based tool-calling agent with streaming responses, reasoning 
 
 ### Esc Interrupt
 
-Press `Esc` during agent processing to **immediately abort** the current turn. The agent loop checks for abort signals between rounds and stops gracefully. Completed work (file edits, tool results) is preserved — only the in-progress round is cancelled. Beats Claude Code (Esc broken in 2026) and Cursor (reverts all changes).
+Press `Esc` during agent processing to immediately abort the current turn. Completed work (file edits, tool results) is preserved — only the in-progress round is cancelled.
 
 ### Message Queue
 
-Send messages while the agent is working — they're **queued** and processed automatically when the current turn completes. No more staring at a blocked input box:
-
-```
-Agent is working...
-> redeploy to staging         ← queued (yellow indicator appears)
-> also update the readme      ← queued (2 pending)
-
-[Agent finishes current task]
-Processing queued message (1 remaining)...
-[Agent processes "redeploy to staging"]
-Processing queued message (0 remaining)...
-[Agent processes "also update the readme"]
-```
-
-A yellow indicator shows `◈ 2 messages queued — will process after current task` above the status bar. Press `Esc` to cancel both the current task and clear the queue.
+Send messages while the agent is working — they're queued and auto-processed when the turn completes. A yellow indicator shows `◈ 2 messages queued` above the status bar. `Esc` during processing clears both the current task and the queue.
 
 ### `/btw` — Side-Channel Questions
 
-Ask quick questions while the agent works — answers appear in a **dedicated side panel** without polluting the main conversation:
+Ask quick questions without polluting the main conversation. Answers appear in a dedicated yellow-bordered panel:
 
 ```
-◈ Side Channel  2 msgs  · Esc dismiss
+◈ Side Channel  · Esc dismiss
   /btw which port does the dev server use?
-  Port 3000. Configured in vite.config.ts under server.port.
-
-  /btw should I use React.memo here?  
-  Yes, for component-level memoization. Use useMemo for computed values.
+  Port 3000. Configured in vite.config.ts.
 ```
 
-- **Full conversation context** — the LLM sees your entire session history
-- **Multiple turns** — unlimited `/btw` messages stack in the panel
-- **Collapsible** — `Space` to expand responses, `Enter` to collapse, `Esc` to dismiss
-- **No context pollution** — btw responses are NOT written back to the main conversation
+- Full conversation context sent to LLM
+- Multiple `/btw` messages stack
+- `Space` to expand, `Esc` to dismiss
+- Responses are NOT written back to the main conversation
 
-### Expand/Collapse Tool Cards & Thinking
+### Expand/Collapse Thinking & Tool Cards
 
-- `Tab` — cycle focus through expandable items (thinking blocks, tool cards)
-- `Space` — toggle expand/collapse on the focused item
-- `▶ ` prefix indicates which item is focused (cyan)
-- Completed turns keep their expand/collapse state
+- `Tab` — cycle focus through expandable items
+- `Space` — toggle expand/collapse on focused item
+- `▶ ` prefix indicates focused item (cyan)
+
+---
+
+## `/goal` — Autonomous Goal-Driven Loops
+
+Set a completion condition and the agent auto-continues until met.
+
+### Usage
+
+```
+/goal all tests pass and npm test exits 0
+/goal migrate all legacy API calls to new API, npm typecheck exits 0, or stop after 20 turns
+/goal                    ← check current goal status
+/goal clear              ← stop goal mode (also: stop, off, cancel)
+```
+
+### How It Works
+
+1. After each turn, a small model evaluates whether the goal is met
+2. If not met → agent auto-submits next turn with guidance
+3. If met → goal auto-clears with success message
+4. Turn limit from condition (`stop after N turns`) or default 50
+
+### Status Bar
+
+```
+deepseek:deepseek-v4-flash  BUILD/auto-edit  ●  Idle  ◎ goal: 3t 45s  CTX 12%  ...
+```
+
+### Good Goal Examples
+
+```
+/goal all auth tests pass and npm run lint exits 0
+/goal CHANGELOG.md has entries for every PR merged this week
+/goal split src/megafile.ts into modules under src/parts/ where each is <300 lines
+/goal close all GitHub issues labeled "needs-triage"
+```
+
+---
+
+## Advisor & Pre-Flight Workers
+
+When enabled, workers (advisor, planner, coder, reviewer, tester) run as parallel LLM calls before the main agent loop. The advisor uses its own provider/model if configured.
+
+### Configuration
+
+```json
+{
+  "llm": {
+    "advisor": {
+      "enabled": true,
+      "provider": "openai",
+      "model": "gpt-4o",
+      "autoOnComplexTasks": true
+    }
+  }
+}
+```
+
+- `enabled`: manual toggle via `/advisor on/off`
+- `autoOnComplexTasks`: auto-activates for complex tasks (multi-file, refactors)
+- Worker results appear as expandable thinking blocks in the feed
+
+### Commands
+
+```
+/advisor on         ← enable advisor + workers
+/advisor off        ← disable
+/advisor status     ← show current config
+```
 
 ---
 
 ## Slash Commands
 
-```
-/help           Command reference
-/model          Switch model/provider interactively
-/build          BUILD mode (full tools)
-/plan           PLAN mode (read-only)
-/agents         Agent dashboard (create, edit, invoke)
-/mcp            MCP server dashboard (manage connections)
-/mcp-add        Add MCP server (interactive wizard)
-/mcp-auth       Start OAuth browser flow for MCP server
-/mcp-trust      Trust workspace .mcp.json
-/mcp-reload     Reconnect MCP servers
-/swarm          Run multi-agent swarm
-/swarm-stop     Stop running swarm
-/swarm-traces   List swarm trace files
-/swarm-report   Show swarm observability report
-/session        Session management
-/config         Configure API keys
-/advisor        Toggle advisor mode
-/add            Add file to context
-/btw            Ask a side question (side-channel, non-interrupting)
-/exit           Exit the CLI
-```
+| Command | Description |
+|---|---|
+| `/help` | Command reference |
+| `/model` | Switch model/provider |
+| `/build`, `/plan` | Toggle execution mode |
+| `/approval <policy>` | Set `suggest` / `auto_edit` / `full_auto` |
+| `/agents` | Agent management dashboard |
+| `/btw <question>` | Side-channel question |
+| `/goal <condition>` | Autonomous goal-driven loop |
+| `/goal clear` | Stop goal mode |
+| `/advisor on/off/status` | Toggle advisors |
+| `/mcp` | MCP server dashboard |
+| `/mcp-add` | Add MCP server (wizard) |
+| `/mcp-auth <name>` | OAuth browser flow |
+| `/mcp-trust` | Trust workspace `.mcp.json` |
+| `/mcp-reload` | Reconnect MCP servers |
+| `/swarm <preset> [task]` | Multi-agent swarm |
+| `/swarm-stop` | Stop swarm |
+| `/session` | Session management |
+| `/resume` | Resume session |
+| `/clear` | Clear history |
+| `/compact` | Compact context |
+| `/config` | Configure API keys |
+| `/add <file>` | Add file to context |
+| `/exit` | Save and exit |
 
 ---
 
 ## Agent System
 
-### AI-Assisted Agent Creator
+### AI-Assisted Creation
 
-Use `/agents` → `g` to describe an agent in natural language — Chorus generates the full definition:
+`/agents` → `g` → describe what you want. The LLM generates name, description, and structured system prompt.
 
-```
-"g → A security auditor that reviews code for OWASP Top 10,
-       provides severity ratings, and suggests specific fixes"
-```
+### Manual Editor
 
-The LLM generates name, description, and a structured system prompt. Review and accept, edit manually (`e`), or regenerate (`r`).
+Full form: name, description, system prompt, model override, tool whitelist, permission mode, max rounds.
 
-### Manual Agent Editor
+### Dashboard
 
-Full 7-field editor: name, description, system prompt, model override, tool whitelist (checkbox), permission mode (full_auto/auto_edit/suggest), max rounds.
-
-### Agent Dashboard (`/agents`)
-
-```
-◈ Agents  2 defined                    n:new  g:generate  ↑↓:nav  enter:detail
-▶ security-auditor   default      user    Security auditor for OWASP Top 10
-  code-reviewer      gpt-4o       user    Expert code reviewer for PRs
-```
-
-Keyboard: `n` new, `g` AI generate, `↑↓` navigate, `Enter` detail, `e` edit, `v` view, `d` delete.
+`↑↓` navigate, `Enter` detail, `n` new, `g` AI generate, `e` edit, `v` view, `d` delete.
 
 ### Invocation
 
-Prefix messages with `@agent-name`:
-
 ```
-@security-auditor review the auth module for vulnerabilities
+@security-auditor review src/auth for vulnerabilities
 ```
 
-Agents appear in `@` autocomplete alongside file mentions.
+Agents appear in `@` autocomplete.
 
 ---
 
-## MCP — Model Context Protocol
+## MCP
 
-The most comprehensive MCP integration in any CLI coding agent.
+### Authentication Methods
 
-### Authentication
-
-| Method | Use Case |
+| Method | Config |
 |---|---|
-| **Bearer token** | API key from env var |
-| **Client credentials** | OAuth2 machine-to-machine |
-| **Authorization code** | OAuth2 browser login (PKCE) |
-| **AWS SigV4** | AWS API Gateway endpoints |
+| Bearer token | `auth: { type: "bearer", tokenEnv: "VAR" }` |
+| Client credentials | `auth: { type: "client_credentials", clientIdEnv: "VAR", clientSecretEnv: "VAR" }` |
+| Authorization code | `auth: { type: "authorization_code", clientIdEnv: "VAR" }` → browser login |
+| Headers | `headers: { "Key": "value" }` |
+| envFile | `envFile: ".env.mcp"` for stdio servers |
 
-OAuth tokens are **AES-256-GCM encrypted** at `~/.chorus/mcp-auth.json`.
+### Encrypted Storage
 
-### Interactive UI
+AES-256-GCM at `~/.chorus/mcp-auth.json`. Key at `~/.chorus/.mcp-key` (0600).
 
-- **`/mcp`** — dashboard: server list, live status, auth state, tool counts. `↑↓` navigate, `Enter` detail, `a` OAuth flow, `e` toggle, `d` delete
-- **`/mcp-add`** — 14-step guided wizard: transport, command, args, env vars, headers, auth type, timeout
-- **`/mcp-auth <name>`** — opens browser for OAuth login
-- **Health checks** — 30s ping with auto-reconnect, 3-strike circuit breaker
+### Trust System
 
-### CLI
-
-```bash
-chorus mcp list              # status + auth state
-chorus mcp add <name> ...    # add server
-chorus mcp auth <name>       # OAuth browser flow
-chorus mcp trust             # trust .mcp.json
-```
+Project `.mcp.json` is content-hash verified. `/mcp-trust` after review. Auto-revoked on changes.
 
 ---
 
 ## Configuration
+
+**Main config**: `~/.chorus/settings.json`
 
 ```json
 {
@@ -193,23 +198,12 @@ chorus mcp trust             # trust .mcp.json
     "providers": {
       "deepseek": { "apiKey": "${DEEPSEEK_API_KEY}", "model": "deepseek-v4-flash" },
       "openai": { "apiKey": "${OPENAI_API_KEY}", "model": "gpt-4o" },
-      "anthropic": { "apiKey": "${ANTHROPIC_API_KEY}", "model": "claude-sonnet-4-20250514" },
       "ollama": { "baseUrl": "http://localhost:11434/v1", "model": "qwen3-coder:latest" }
     },
     "modes": {
-      "build": { "provider": "deepseek", "model": "deepseek-v4-flash" },
-      "plan": { "provider": "deepseek", "model": "deepseek-v4-flash" }
-    }
-  },
-  "mcp": {
-    "servers": {
-      "MiniMax": {
-        "type": "stdio",
-        "command": "uvx",
-        "args": ["minimax-coding-plan-mcp", "-y"],
-        "env": { "MINIMAX_API_KEY": "${MINIMAX_API_KEY}", "MINIMAX_API_HOST": "https://api.minimax.io" }
-      }
-    }
+      "build": { "provider": "deepseek", "model": "deepseek-v4-flash" }
+    },
+    "advisor": { "enabled": false, "autoOnComplexTasks": true }
   }
 }
 ```
@@ -218,17 +212,15 @@ chorus mcp trust             # trust .mcp.json
 
 ## Security
 
-- **Workspace confinement** — all tools restricted to project root
-- **Secret detection** — blocks `.env`, `.pem`, `.key`, credentials
-- **Encrypted MCP tokens** — AES-256-GCM
-- **MCP trust system** — content-hash verified project configs
-- **Permission modes** — suggest / auto_edit / full_auto
+- Workspace confinement (all tools restricted to project root)
+- Secret detection (`.env`, `.pem`, `.key`, credentials)
+- MCP encrypted credentials (AES-256-GCM)
+- Approval gates (per-tool, per-mode)
+- Shell allowlist (only approved commands)
 
 ## Requirements
-
 - Node.js >= 20
-- Optional: Ollama for local-only operation
+- Optional: Ollama for local-only
 
 ## License
-
 MIT

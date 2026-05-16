@@ -34,6 +34,7 @@ import { McpServerWizard } from "./components/McpServerWizard.js";
 import { McpDashboard } from "./components/McpDashboard.js";
 import { AgentDashboard } from "./components/AgentDashboard.js";
 import { BtwSidePanel, type BtwMessage } from "./components/BtwSidePanel.js";
+import { AdvisorConfig } from "./components/AdvisorConfig.js";
 import { runSwarm } from "../swarm/orchestrator.js";
 import { buildPresetSwarm } from "../swarm/presets/index.js";
 import { createProvider } from "../llm/registry.js";
@@ -215,6 +216,10 @@ export function App() {
   const [btwMessages, setBtwMessages] = useState<BtwMessage[]>([]);
   const abortRef = useRef<AbortController | null>(null);
   const [queuedMessages, setQueuedMessages] = useState<string[]>([]);
+  const [goal, setGoal] = useState<{ condition: string; turns: number; startedAt: number; totalTokens: number } | null>(null);
+  const goalRef = useRef(goal);
+  goalRef.current = goal;
+  const [advisorConfigOpen, setAdvisorConfigOpen] = useState(false);
 
   const showModelSelectForProvider = useCallback((provider: string) => {
     const ps = loadSettings().llm?.providers?.[provider] ?? {};
@@ -493,12 +498,16 @@ export function App() {
   pendingApprovalRef.current = pendingApproval;
   respondToApprovalRef.current = respondToApproval;
 
-  // Auto-process queued messages when agent finishes current turn
+  // Auto-process queued messages AND goal auto-continue when agent finishes
   const prevProcessingRef = useRef(feedState.processing);
   useEffect(() => {
     const wasProcessing = prevProcessingRef.current;
     prevProcessingRef.current = feedState.processing;
-    if (wasProcessing && !feedState.processing && queuedMessages.length > 0) {
+
+    if (!wasProcessing || feedState.processing) return;
+
+    // Process queued messages first
+    if (queuedMessages.length > 0) {
       const next = queuedMessages[0];
       setQueuedMessages((prev) => prev.slice(1));
       dispatch({ type: "APPEND_SYSTEM", id: `sys-${Date.now()}`, text: `Processing queued message (${queuedMessages.length - 1} remaining)...` });
@@ -512,8 +521,71 @@ export function App() {
           if (abortRef.current === controller) abortRef.current = null;
         }
       })();
+      return;
     }
-  }, [feedState.processing, queuedMessages.length, dispatch, submit]);
+
+    // Goal auto-continue: evaluate goal, auto-submit next turn if not met
+    const currentGoal = goalRef.current;
+    if (currentGoal && !feedState.processing) {
+      void (async () => {
+        try {
+          const { evaluateGoal } = await import("./agent/goalRuntime.js");
+          const msgs = getMessages();
+          const evalResult = await evaluateGoal(currentGoal.condition, msgs as never);
+
+          if (evalResult.met) {
+            setGoal(null);
+            dispatch({
+              type: "APPEND_SYSTEM",
+              id: `goal-${Date.now()}`,
+              text: `✓ Goal met after ${currentGoal.turns + 1} turns! "${currentGoal.condition}"\n  Reason: ${evalResult.reason}`,
+            });
+          } else {
+            const nextTurns = currentGoal.turns + 1;
+            // Check turn limit from condition text
+            const turnLimitMatch = currentGoal.condition.match(/stop after (\d+) turns?/i);
+            const maxTurns = turnLimitMatch ? Number(turnLimitMatch[1]) : 50;
+
+            if (nextTurns >= maxTurns) {
+              setGoal(null);
+              dispatch({
+                type: "APPEND_SYSTEM",
+                id: `goal-${Date.now()}`,
+                text: `⚠ Goal stopped after ${maxTurns} turn limit. "${currentGoal.condition}"\n  Last evaluation: ${evalResult.reason}`,
+              });
+              return;
+            }
+
+            setGoal((prev) => prev ? { ...prev, turns: nextTurns } : null);
+            const nextMessage = evalResult.guidance
+              ? `[Auto-continue: goal not yet met] ${evalResult.guidance}\n\nGoal: ${currentGoal.condition}\nReason: ${evalResult.reason}\n\nContinue working.`
+              : `[Auto-continue: goal not yet met] Goal: ${currentGoal.condition}\nReason: ${evalResult.reason}\n\nContinue working toward the goal.`;
+
+            dispatch({
+              type: "APPEND_SYSTEM",
+              id: `goal-${Date.now()}`,
+              text: `◎ /goal — turn ${nextTurns}: ${evalResult.reason}`,
+            });
+
+            const controller = new AbortController();
+            abortRef.current = controller;
+            try {
+              await submit(nextMessage, controller.signal);
+            } finally {
+              if (abortRef.current === controller) abortRef.current = null;
+            }
+          }
+        } catch (e) {
+          dispatch({
+            type: "APPEND_SYSTEM",
+            id: `goal-${Date.now()}`,
+            text: `⚠ Goal evaluation failed: ${e instanceof Error ? e.message : String(e)}. Goal cleared.`,
+          });
+          setGoal(null);
+        }
+      })();
+    }
+  }, [feedState.processing, queuedMessages.length, dispatch, submit, getMessages]);
 
   useInput((_input, key) => {
     if (key.ctrl && _input === "c") exit();
@@ -1109,6 +1181,47 @@ export function App() {
       setIsPastePreviewed(false);
       prevLenRef.current = 0;
 
+      // Handle /goal directly since it needs goal state
+      if (trimmed.startsWith("/goal")) {
+        const goalText = trimmed.slice(5).trim();
+        if (!goalText || goalText === "status") {
+          if (goal) {
+            dispatch({ type: "APPEND_SYSTEM", id: `goal-${Date.now()}`, text: `◎ /goal active — "${goal.condition}"\n  ${goal.turns} turns · ${Math.floor((Date.now() - goal.startedAt) / 1000)}s elapsed` });
+          } else {
+            dispatch({ type: "APPEND_SYSTEM", id: `goal-${Date.now()}`, text: "No active goal. Usage: /goal <condition> — agent auto-continues until condition is met.\n\nExamples:\n  /goal all tests pass and npm test exits 0\n  /goal CHANGELOG.md has entries for all PRs merged this week\n  /goal migrate all legacy API calls to new API, npm run typecheck exits 0, or stop after 20 turns\n\nClear: /goal clear" });
+          }
+          return;
+        }
+        if (goalText === "clear" || goalText === "stop" || goalText === "off" || goalText === "cancel") {
+          if (goal) {
+            dispatch({ type: "APPEND_SYSTEM", id: `goal-${Date.now()}`, text: `Goal cleared. Completed ${goal.turns} turns.` });
+          }
+          setGoal(null);
+          return;
+        }
+        // Set a new goal
+        setGoal({ condition: goalText, turns: 0, startedAt: Date.now(), totalTokens: 0 });
+        dispatch({ type: "APPEND_SYSTEM", id: `goal-${Date.now()}`, text: `◎ /goal set — agent will auto-continue until: "${goalText}"\n\nUse /goal clear to stop, /goal to check status.` });
+        return;
+      }
+
+      // Handle /advisor directly — opens interactive config overlay
+      if (trimmed === "/advisor" || trimmed.startsWith("/advisor ")) {
+        const arg = trimmed.slice(8).trim().toLowerCase();
+        if (arg === "on" || arg === "off") {
+          const settings = loadSettings();
+          saveSettings({
+            ...settings,
+            llm: { ...settings.llm, advisor: { ...settings.llm?.advisor, enabled: arg === "on" } },
+          });
+          setAdvisorEnabled(arg === "on");
+          dispatch({ type: "APPEND_SYSTEM", id: `sys-${Date.now()}`, text: `Advisor: ${arg.toUpperCase()}` });
+        } else {
+          setAdvisorConfigOpen(true);
+        }
+        return;
+      }
+
       const handled = handleSlashCommand(trimmed, {
         dispatch,
         clearHistory,
@@ -1230,6 +1343,13 @@ export function App() {
     return "thinking";
   }, [feedState.processing, feedState.entries]);
 
+  const goalStatus = useMemo(() => {
+    if (!goal) return undefined;
+    const elapsed = Math.floor((Date.now() - goal.startedAt) / 1000);
+    const elapsedStr = elapsed > 60 ? `${Math.floor(elapsed / 60)}m ${elapsed % 60}s` : `${elapsed}s`;
+    return `◎ goal: ${goal.turns}t ${elapsedStr}`;
+  }, [goal]);
+
   // Session view mode
   if (sessionViewId) {
     const session = feedState.sessions[sessionViewId];
@@ -1248,6 +1368,30 @@ export function App() {
       );
     }
     setSessionViewId(null);
+  }
+
+  if (advisorConfigOpen) {
+    return (
+      <Box flexDirection="column">
+        <Box flexGrow={1}>
+        <AdvisorConfig
+          onDone={(msg) => {
+            setAdvisorConfigOpen(false);
+            setAdvisorEnabled(loadSettings().llm?.advisor?.enabled ?? false);
+            dispatch({ type: "APPEND_SYSTEM", id: `sys-${Date.now()}`, text: msg });
+          }}
+          onCancel={() => setAdvisorConfigOpen(false)}
+        />
+        </Box>
+        <StatusBar
+          modelLabel={displayLabel}
+          tokens={tokens}
+          agentState="idle"
+          sessionName={sessionManager.getCurrent()?.name}
+          maxTokens={contextWindow}
+        />
+      </Box>
+    );
   }
 
   if (agentDashboardOpen) {
@@ -1533,6 +1677,7 @@ export function App() {
         maxTokens={contextWindow}
         executionMode={executionMode}
         approvalPolicy={approvalPolicy}
+        goalStatus={goalStatus}
       />
     </Box>
   );

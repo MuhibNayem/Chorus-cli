@@ -153,7 +153,8 @@ export function useAgentStream({
           resolvedProviderName,
           resolvedModelName,
           agentSystemPrompt,
-          activeMode
+          activeMode,
+          dispatch,
         );
 
         const pendingRun: PendingAgentRun = {
