@@ -1,7 +1,7 @@
 {
   "name": "chorus-agent-cli",
-  "version": "0.1.8",
-  "description": "A high-performance, local-first interactive agent harness for production coding tasks. Multi-agent orchestration with Ollama, OpenAI, DeepSeek, and more.",
+  "version": "0.2.0",
+  "description": "The most powerful open-source AI coding agent for the terminal. Goal-driven autonomous loops, side-channel conversations, pre-flight advisor workers, multi-agent swarms, adaptive skills, full-diff file rendering, and MCP with OAuth.",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -31,7 +31,14 @@
     "terminal",
     "tui",
     "ink",
-    "ai-native"
+    "ai-native",
+    "multi-agent",
+    "swarm",
+    "mcp",
+    "goal-driven",
+    "coding-agent",
+    "pair-programming",
+    "developer-tools"
   ],
   "license": "MIT",
   "scripts": {
