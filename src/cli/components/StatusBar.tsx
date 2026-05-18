@@ -74,7 +74,7 @@ function StatusBarInner({
     : "";
 
   return (
-    <Box borderStyle="single" borderColor="grey" paddingLeft={1} paddingRight={1}>
+    <Box flexShrink={0} borderStyle="single" borderColor="grey" paddingLeft={1} paddingRight={1}>
       <Text bold color="white">{safeModelLabel}</Text>
       <Text>{"  "}</Text>
       <Text color={executionMode === "plan" ? "yellow" : "green"}>{executionMode.toUpperCase()}</Text>

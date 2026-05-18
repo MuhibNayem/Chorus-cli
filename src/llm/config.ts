@@ -10,7 +10,8 @@ export type ProviderName =
   | "groq"
   | "openrouter"
   | "anthropic"
-  | "gemini";
+  | "gemini"
+  | "opencode";
 
 const ALL_PROVIDER_NAMES: ProviderName[] = [
   "ollama",
@@ -23,6 +24,7 @@ const ALL_PROVIDER_NAMES: ProviderName[] = [
   "openrouter",
   "anthropic",
   "gemini",
+  "opencode",
 ];
 
 export function normalizeProviderName(value?: string): ProviderName | null {
@@ -75,6 +77,8 @@ function defaultModel(provider: ProviderName): string {
       return "claude-3-5-sonnet-20241022";
     case "gemini":
       return "gemini-1.5-pro-latest";
+    case "opencode":
+      return "anthropic/claude-sonnet-4-5";
     default:
       return "";
   }

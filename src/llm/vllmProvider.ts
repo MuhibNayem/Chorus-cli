@@ -496,10 +496,15 @@ export class VllmProvider implements LLMProvider {
   }
 
   private buildHeaders(): Record<string, string> {
-    return {
+    const headers: Record<string, string> = {
       "Content-Type": "application/json",
       Authorization: `Bearer ${this.apiKey}`,
     };
+    if (this.name === "opencode") {
+      headers["x-opencode-client"] = "cli";
+      headers["User-Agent"] = "opencode/latest/1.3.15/cli";
+    }
+    return headers;
   }
 
   private toMessages(input: GenerationRequest) {

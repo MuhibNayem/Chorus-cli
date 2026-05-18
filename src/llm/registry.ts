@@ -11,6 +11,10 @@ export function createProvider(name: string): LLMProvider {
   return new VllmProvider({ name: providerName });
 }
 
+export function createOpenCodeProvider(baseUrl?: string): LLMProvider {
+  return new VllmProvider({ name: "opencode", baseUrl: baseUrl ?? "https://opencode.ai/zen/v1" });
+}
+
 export async function getDefaultProvider(): Promise<LLMProvider> {
   if (!defaultProviderPromise) {
     defaultProviderPromise = Promise.resolve(createProvider(getPreferredProviderName()));

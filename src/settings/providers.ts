@@ -180,6 +180,16 @@ export const ALL_PROVIDERS: ProviderDef[] = [
     apiKeyLabel: "Gemini API key",
     listModels: (baseUrl, apiKey) => fetchGeminiModels(baseUrl, apiKey),
   },
+  {
+    id: "opencode",
+    label: "OpenCode",
+    category: "cloud",
+    requiresApiKey: true,
+    allowCustomBaseUrl: true,
+    defaultBaseUrl: "https://opencode.ai/zen/v1",
+    apiKeyLabel: "OpenCode API key",
+    listModels: (baseUrl, apiKey) => fetchOpenAiModels(baseUrl, apiKey),
+  },
 ];
 
 export function getProviderById(id: string): ProviderDef | undefined {

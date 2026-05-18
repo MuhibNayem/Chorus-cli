@@ -8,9 +8,10 @@ type ParsedMcpAdd = {
   server: McpServerSettings;
 };
 
-function requireValue(args: string[], index: number, flag: string): string {
+function requireValue(args: string[], index: number, flag: string, allowFlagLike = false): string {
   const value = args[index + 1];
-  if (!value || value.startsWith("--")) throw new Error(`Missing value for ${flag}`);
+  if (!value) throw new Error(`Missing value for ${flag}`);
+  if (!allowFlagLike && value.startsWith("--")) throw new Error(`Missing value for ${flag}`);
   return value;
 }
 
@@ -22,7 +23,7 @@ function parseKeyValue(value: string, flag: string): [string, string] {
 
 function parseAdd(args: string[]): ParsedMcpAdd {
   const name = args[0];
-  if (!name) throw new Error("Usage: chorus mcp add <name> --type stdio --command <cmd> [--arg value]");
+  if (!name) throw new Error("Usage: chorus mcp add <name> --type stdio --command <cmd> [--arg value] [--env KEY=VALUE]");
 
   const server: McpServerSettings = { type: "stdio" };
   for (let i = 1; i < args.length; i += 1) {
@@ -36,7 +37,7 @@ function parseAdd(args: string[]): ParsedMcpAdd {
       server.command = requireValue(args, i, flag);
       i += 1;
     } else if (flag === "--arg") {
-      server.args = [...(server.args ?? []), requireValue(args, i, flag)];
+      server.args = [...(server.args ?? []), requireValue(args, i, flag, true)];
       i += 1;
     } else if (flag === "--url") {
       server.url = requireValue(args, i, flag);

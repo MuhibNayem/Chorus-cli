@@ -37,6 +37,7 @@ type State = {
   llmApiKey: string;
   models: string[];
   modelIndex: number;
+  modelSearch: string;
   // Tool API keys
   serperKey: string;
   googleCseKey: string;
@@ -73,6 +74,7 @@ function buildInitialState(): State {
     llmApiKey: pSettings.apiKey ?? "",
     models: [],
     modelIndex: 0,
+    modelSearch: "",
     serperKey: settingsApiKeys.serper ?? "",
     googleCseKey: settingsApiKeys.googleCseKey ?? "",
     googleCseId: settingsApiKeys.googleCseId ?? "",
@@ -158,6 +160,10 @@ export function ConfigWizard({ onDone }: Props) {
   const spinner = useSpinner(state.phase === "fetching-models");
   const provider = getProviderById(state.providerId);
 
+  const filteredModels = state.modelSearch
+    ? state.models.filter((m) => m.toLowerCase().includes(state.modelSearch.toLowerCase()))
+    : state.models;
+
   const localProviders = ALL_PROVIDERS.filter((p) => p.category === "local");
   const cloudProviders = ALL_PROVIDERS.filter((p) => p.category === "cloud");
 
@@ -188,9 +194,27 @@ export function ConfigWizard({ onDone }: Props) {
     }
 
     if (state.phase === "select-model") {
-      if (key.upArrow)   setState((s) => ({ ...s, modelIndex: Math.max(0, s.modelIndex - 1) }));
-      if (key.downArrow) setState((s) => ({ ...s, modelIndex: Math.min(s.models.length - 1, s.modelIndex + 1) }));
-      if (key.return)    setState((s) => ({ ...s, phase: "enter-serper", error: null }));
+      if (key.upArrow) {
+        setState((s) => ({ ...s, modelIndex: Math.max(0, s.modelIndex - 1) }));
+        return;
+      }
+      if (key.downArrow) {
+        setState((s) => ({ ...s, modelIndex: Math.min(filteredModels.length - 1, s.modelIndex + 1) }));
+        return;
+      }
+      if (key.backspace || key.delete) {
+        setState((s) => ({ ...s, modelSearch: s.modelSearch.slice(0, -1), modelIndex: 0 }));
+        return;
+      }
+      if (input && input.length === 1 && !key.ctrl && !key.meta && input.charCodeAt(0) >= 0x20) {
+        setState((s) => ({ ...s, modelSearch: s.modelSearch + input, modelIndex: 0 }));
+        return;
+      }
+      if (key.return) {
+        const selected = filteredModels[state.modelIndex];
+        const actualIndex = selected ? state.models.indexOf(selected) : state.modelIndex;
+        setState((s) => ({ ...s, modelIndex: actualIndex, modelSearch: "", phase: "enter-serper", error: null }));
+      }
       return;
     }
 
@@ -269,7 +293,7 @@ export function ConfigWizard({ onDone }: Props) {
     "enter-baseurl":        "[Enter] confirm  [Esc] back",
     "enter-llm-apikey":     "[Enter] confirm  [Esc] back",
     "fetching-models":      "[Esc] back",
-    "select-model":         "[↑↓] navigate  [Enter] confirm  [Esc] back",
+    "select-model":         "type to search · [↑↓] navigate  [Enter] confirm  [Esc] back",
     "enter-serper":         "[Enter] confirm (empty = keep existing)  [Esc] back",
     "enter-google-cse-key": "[Enter] confirm  [Esc] back",
     "enter-google-cse-id":  "[Enter] confirm  [Esc] back",
@@ -378,14 +402,26 @@ export function ConfigWizard({ onDone }: Props) {
         {/* ── Step 4b: Select model ── */}
         {state.phase === "select-model" && (
           <Box flexDirection="column">
-            {state.models.map((m, i) => {
-              const selected = i === state.modelIndex;
-              return (
-                <Text key={m} color={selected ? "cyan" : "white"} bold={selected}>
-                  {selected ? "▶ " : "  "}{m}
-                </Text>
-              );
-            })}
+            <Box flexDirection="row" marginBottom={0}>
+              <Text color="grey">{"  / "}</Text>
+              <Text color="white">{state.modelSearch}</Text>
+              <Text color="cyan">{"█"}</Text>
+              {state.modelSearch && (
+                <Text color="grey" dimColor>{`  (${filteredModels.length} match${filteredModels.length === 1 ? "" : "es"})`}</Text>
+              )}
+            </Box>
+            {filteredModels.length === 0 ? (
+              <Text color="grey" dimColor>{"  No matches — keep typing or press Backspace"}</Text>
+            ) : (
+              filteredModels.map((m, i) => {
+                const selected = i === state.modelIndex;
+                return (
+                  <Text key={m} color={selected ? "cyan" : "white"} bold={selected}>
+                    {selected ? "▶ " : "  "}{m}
+                  </Text>
+                );
+              })
+            )}
           </Box>
         )}
 

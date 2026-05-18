@@ -69,10 +69,11 @@ function InputBoxInner({
   const showPaste = isPastePreviewed && value.length > 20;
 
   return (
-    <Box flexDirection="column">
+    <Box flexDirection="column" flexShrink={0}>
       {showPaste && <PastePreview text={value} />}
 
       <Box
+        flexShrink={0}
         borderStyle="round"
         borderColor={disabled ? "yellow" : "cyan"}
         paddingLeft={1}

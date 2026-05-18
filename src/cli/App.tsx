@@ -208,6 +208,7 @@ export function App() {
   const [agentViewerTarget, setAgentViewerTarget] = useState<AgentDef | null>(null);
   const [selectionMode, setSelectionMode] = useState<SelectionMode>(null);
   const [selectionIndex, setSelectionIndex] = useState(0);
+  const [selectionSearch, setSelectionSearch] = useState("");
   const [sessionViewId, setSessionViewId] = useState<string | null>(null);
   const [mcpWizardOpen, setMcpWizardOpen] = useState(false);
   const [mcpDashboardOpen, setMcpDashboardOpen] = useState(false);
@@ -446,9 +447,21 @@ export function App() {
   const slashSuggestions = useMemo((): Suggestion[] => {
     if (!inputValue.startsWith("/")) return [];
     const partial = inputValue.toLowerCase();
-    return SLASH_COMMANDS
-      .filter((c) => c.name.startsWith(partial))
-      .map((c) => ({ label: c.name, description: c.description }));
+    // Once the user typed a space the command name is settled — no more suggestions
+    if (partial.includes(" ")) return [];
+    const query = partial.slice(1); // text after the leading /
+    // Prefix matches take full priority
+    const prefixMatches = SLASH_COMMANDS.filter((c) => c.name.startsWith(partial));
+    if (prefixMatches.length > 0) {
+      return prefixMatches.map((c) => ({ label: c.name, description: c.description }));
+    }
+    // Description search only as a fallback when no prefix matches
+    if (query.length >= 2) {
+      return SLASH_COMMANDS
+        .filter((c) => c.description.toLowerCase().includes(query))
+        .map((c) => ({ label: c.name, description: c.description }));
+    }
+    return [];
   }, [inputValue]);
 
   const mentionSuggestions = useMemo((): Suggestion[] => {
@@ -476,9 +489,25 @@ export function App() {
     slashSuggestions.length > 0 ? slashSuggestions :
     mentionSuggestions.length > 0 ? mentionSuggestions : [];
 
+  // Filtered items for the selection box search
+  const filteredSelectionItems = useMemo(() => {
+    if (!selectionMode) return [];
+    if (!selectionSearch) return selectionMode.items;
+    const q = selectionSearch.toLowerCase();
+    return selectionMode.items.filter(
+      (item) => item.label.toLowerCase().includes(q) || item.value.toLowerCase().includes(q)
+    );
+  }, [selectionMode, selectionSearch]);
+
   useEffect(() => {
-    setSuggestionIndex(activeSuggestions.length > 0 ? 0 : -1);
+    setSuggestionIndex(-1);
   }, [activeSuggestions.length]);
+
+  // Reset search and index whenever a new selection mode opens
+  useEffect(() => {
+    setSelectionSearch("");
+    setSelectionIndex(0);
+  }, [selectionMode?.title]);
 
   const currentSession = sessionManager.getCurrent();
 
@@ -619,24 +648,42 @@ export function App() {
     // Selection mode intercepts all navigation and confirm/cancel
     if (selectionMode) {
       if (key.escape) {
-        setSelectionMode(null);
-        setInputValue("");
-        setSuggestionIndex(-1);
+        if (selectionSearch) {
+          // First Esc clears the search, second Esc dismisses the box
+          setSelectionSearch("");
+          setSelectionIndex(0);
+        } else {
+          setSelectionMode(null);
+          setInputValue("");
+          setSuggestionIndex(-1);
+        }
         return;
       }
       if (key.upArrow) {
-        if (selectionMode.items.length > 0)
-          setSelectionIndex((i) => i <= 0 ? selectionMode.items.length - 1 : i - 1);
+        const len = filteredSelectionItems.length;
+        if (len > 0) setSelectionIndex((i) => (i <= 0 ? len - 1 : i - 1));
         return;
       }
       if (key.downArrow) {
-        if (selectionMode.items.length > 0)
-          setSelectionIndex((i) => (i + 1) % selectionMode.items.length);
+        const len = filteredSelectionItems.length;
+        if (len > 0) setSelectionIndex((i) => (i + 1) % len);
         return;
       }
       if (key.return) {
-        const item = selectionMode.items[selectionIndex];
+        const item = filteredSelectionItems[selectionIndex];
         if (item) selectionMode.onSelect(item.value);
+        return;
+      }
+      // Backspace removes last search character
+      if (key.backspace || key.delete) {
+        setSelectionSearch((s) => s.slice(0, -1));
+        setSelectionIndex(0);
+        return;
+      }
+      // Printable character → append to search query
+      if (_input && _input.length === 1 && !key.ctrl && !key.meta && _input.charCodeAt(0) >= 0x20) {
+        setSelectionSearch((s) => s + _input);
+        setSelectionIndex(0);
         return;
       }
       return;
@@ -740,7 +787,7 @@ export function App() {
     prevLenRef.current = val.length;
 
     setInputValue(val);
-    setSuggestionIndex(activeSuggestions.length > 0 ? 0 : -1);
+    setSuggestionIndex(-1);
   }
 
   useEffect(() => {
@@ -1167,13 +1214,21 @@ export function App() {
       if (suggestionIndex >= 0 && activeSuggestions.length > 0) {
         const selected = activeSuggestions[suggestionIndex];
         if (slashSuggestions.length > 0) {
-          setInputValue(selected.label + " ");
+          // Exact match: user already typed the full command — execute directly
+          if (selected.label.toLowerCase() === trimmed.toLowerCase()) {
+            // fall through to command execution below
+          } else {
+            setInputValue(selected.label + " ");
+            setSuggestionIndex(-1);
+            setInputKey((k) => k + 1);
+            return;
+          }
         } else {
           setInputValue((v) => v.replace(/@([\w./\\-]*)$/, `@${selected.label} `));
+          setSuggestionIndex(-1);
+          setInputKey((k) => k + 1);
+          return;
         }
-        setSuggestionIndex(-1);
-        setInputKey((k) => k + 1);
-        return;
       }
 
       setInputValue("");
@@ -1637,48 +1692,51 @@ export function App() {
           onDismiss={() => setBtwMessages([])}
         />
       )}
-      {pendingApproval ? (
-        <ApprovalCard approval={pendingApproval} />
-      ) : selectionMode ? (
-        <SelectBox
-          title={selectionMode.title}
-          items={selectionMode.items}
-          selectedIndex={selectionIndex}
-        />
-      ) : (
-        <>
-          {activeSuggestions.length > 0 && (
-            <SuggestionBox
-              suggestions={activeSuggestions}
-              selectedIndex={suggestionIndex}
-            />
-          )}
-          <InputBox
-            value={inputValue}
-            onChange={handleInputChange}
-            onSubmit={handleSubmit}
-            disabled={feedState.processing}
-            isPastePreviewed={isPastePreviewed}
-            onDismissPaste={() => setIsPastePreviewed(false)}
-            resetKey={inputKey}
+      <Box flexDirection="column" flexShrink={0}>
+        {pendingApproval ? (
+          <ApprovalCard approval={pendingApproval} />
+        ) : selectionMode ? (
+          <SelectBox
+            title={selectionMode.title}
+            items={filteredSelectionItems}
+            selectedIndex={selectionIndex}
+            searchQuery={selectionSearch}
           />
-        </>
-      )}
-      {queuedMessages.length > 0 && (
-        <Box paddingLeft={1} paddingRight={1}>
-          <Text color="yellow">{"◈ "}{queuedMessages.length}{" message"}{queuedMessages.length > 1 ? "s" : ""}{" queued — will process after current task"}</Text>
-        </Box>
-      )}
-      <StatusBar
-        modelLabel={displayLabel}
-        tokens={tokens}
-        agentState={agentState}
-        sessionName={sessionManager.getCurrent()?.name}
-        maxTokens={contextWindow}
-        executionMode={executionMode}
-        approvalPolicy={approvalPolicy}
-        goalStatus={goalStatus}
-      />
+        ) : (
+          <>
+            {activeSuggestions.length > 0 && (
+              <SuggestionBox
+                suggestions={activeSuggestions}
+                selectedIndex={suggestionIndex}
+              />
+            )}
+            <InputBox
+              value={inputValue}
+              onChange={handleInputChange}
+              onSubmit={handleSubmit}
+              disabled={feedState.processing}
+              isPastePreviewed={isPastePreviewed}
+              onDismissPaste={() => setIsPastePreviewed(false)}
+              resetKey={inputKey}
+            />
+          </>
+        )}
+        {queuedMessages.length > 0 && (
+          <Box paddingLeft={1} paddingRight={1}>
+            <Text color="yellow">{"◈ "}{queuedMessages.length}{" message"}{queuedMessages.length > 1 ? "s" : ""}{" queued — will process after current task"}</Text>
+          </Box>
+        )}
+        <StatusBar
+          modelLabel={displayLabel}
+          tokens={tokens}
+          agentState={agentState}
+          sessionName={sessionManager.getCurrent()?.name}
+          maxTokens={contextWindow}
+          executionMode={executionMode}
+          approvalPolicy={approvalPolicy}
+          goalStatus={goalStatus}
+        />
+      </Box>
     </Box>
   );
 }

@@ -1,5 +1,4 @@
-import { memo, useCallback } from "react";
-import { Box, Static, Text } from "ink";
+import { Box, Text } from "ink";
 import type { FeedEntry } from "../state/feedReducer.js";
 import { UserMessage } from "./UserMessage.js";
 import { AgentTurn } from "./AgentTurn.js";
@@ -14,99 +13,77 @@ interface FeedProps {
   focusedSwarmSectionId?: string | null;
 }
 
-function isStaticEntry(entry: FeedEntry): boolean {
-  if (entry.kind === "user") return true;
-  if (entry.kind === "system") return true;
-  if (entry.kind === "error") return true;
-  if (entry.kind === "turn" && entry.done) return true;
-  if (entry.kind === "swarm-turn" && entry.status !== "running") return true;
-  return false;
-}
-
-function StaticItem({ entry, onToggle, onToggleSwarmAgent, focusedId }: {
-  entry: FeedEntry;
-  onToggle: (id: string) => void;
-  onToggleSwarmAgent: (swarmId: string, sectionId: string) => void;
-  focusedId?: string | null;
-}) {
-  switch (entry.kind) {
-    case "user":
-      return <UserMessage text={entry.text} />;
-    case "turn":
-      return <AgentTurn entry={entry} onToggle={onToggle} focusedId={focusedId ?? null} />;
-    case "swarm-turn":
-      return <SwarmTurnCard entry={entry} onToggleAgent={onToggleSwarmAgent} focusedSectionId={focusedId ?? null} />;
-    case "error":
-      return (
-        <Box marginBottom={1}>
-          <Text color="red">{"✗ "}{entry.message}</Text>
-        </Box>
-      );
-    case "system":
-      return (
-        <Box marginBottom={1} marginLeft={2}>
-          <Text color="cyan">{entry.text}</Text>
-        </Box>
-      );
-    default:
-      return null;
-  }
-}
-
-const MemoStaticItem = memo(StaticItem);
-
 export function Feed({
   entries,
-  processing: _processing,
+  processing,
   onToggle,
   onToggleSwarmAgent,
   focusedId,
   focusedSwarmSectionId,
 }: FeedProps) {
-  const staticEntries = entries.filter(isStaticEntry);
-  const dynamicEntries = entries.filter((e) => !isStaticEntry(e));
+  // Find the last active (not-done) turn so AgentTurn knows it's live.
+  let lastActiveTurnIndex = -1;
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const e = entries[i];
+    if ((e.kind === "turn" && !e.done) || (e.kind === "swarm-turn" && !e.done)) {
+      lastActiveTurnIndex = i;
+      break;
+    }
+  }
 
-  const renderStatic = useCallback(
-    (entry: FeedEntry) => (
-      <MemoStaticItem
-        key={entry.id}
-        entry={entry}
-        onToggle={onToggle}
-        onToggleSwarmAgent={onToggleSwarmAgent}
-        focusedId={focusedId}
-      />
-    ),
-    [onToggle, onToggleSwarmAgent, focusedId],
-  );
-
+  // All entries rendered in a single flex column pushed to the bottom.
+  // Removing <Static> eliminates the "out-of-flow" height problem: with Static
+  // having 0 flex height, any spacer or justifyContent="flex-end" always fills
+  // the full container, creating a giant gap. Without Static, justifyContent
+  // pushes the growing list to the bottom naturally and Ink's redraw only
+  // touches the lines that actually changed.
   return (
-    <Box flexDirection="column" flexGrow={1}>
-      <Static items={staticEntries}>
-        {(entry) => renderStatic(entry)}
-      </Static>
-      {dynamicEntries.map((entry) => {
-        if (entry.kind === "turn") {
-          return (
-            <AgentTurn
-              key={entry.id}
-              entry={entry}
-              onToggle={onToggle}
-              isLive={!entry.done}
-              focusedId={focusedId ?? null}
-            />
-          );
+    <Box flexDirection="column" flexGrow={1} overflow="hidden" justifyContent="flex-end">
+      {entries.map((entry, i) => {
+        const isLive = lastActiveTurnIndex >= 0 && i >= lastActiveTurnIndex;
+
+        switch (entry.kind) {
+          case "user":
+            return <UserMessage key={entry.id} text={entry.text} />;
+
+          case "turn":
+            return (
+              <AgentTurn
+                key={entry.id}
+                entry={entry}
+                onToggle={onToggle}
+                isLive={isLive && !entry.done}
+                focusedId={isLive ? (focusedId ?? null) : null}
+              />
+            );
+
+          case "swarm-turn":
+            return (
+              <SwarmTurnCard
+                key={entry.id}
+                entry={entry}
+                onToggleAgent={onToggleSwarmAgent}
+                focusedSectionId={isLive ? (focusedSwarmSectionId ?? null) : null}
+              />
+            );
+
+          case "error":
+            return (
+              <Box key={entry.id} marginBottom={1}>
+                <Text color="red">{"✗ "}{entry.message}</Text>
+              </Box>
+            );
+
+          case "system":
+            return (
+              <Box key={entry.id} marginBottom={1} marginLeft={2}>
+                <Text color="cyan">{entry.text}</Text>
+              </Box>
+            );
+
+          default:
+            return null;
         }
-        if (entry.kind === "swarm-turn") {
-          return (
-            <SwarmTurnCard
-              key={entry.id}
-              entry={entry}
-              onToggleAgent={onToggleSwarmAgent}
-              focusedSectionId={focusedSwarmSectionId ?? null}
-            />
-          );
-        }
-        return null;
       })}
     </Box>
   );

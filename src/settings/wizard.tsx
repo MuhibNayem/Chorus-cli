@@ -21,6 +21,7 @@ type WizardState = {
   apiKey: string;
   models: string[];
   modelIndex: number;
+  modelSearch: string;
   providerIndex: number;
   error: string | null;
 };
@@ -50,6 +51,7 @@ function getInitialState(settings: ChorusSettings): WizardState {
     apiKey: pSettings.apiKey ?? "",
     models: [],
     modelIndex: 0,
+    modelSearch: "",
     providerIndex,
     error: null,
   };
@@ -219,15 +221,27 @@ export function SettingsWizard({ initialSettings, onSubmit }: SettingsWizardProp
     if (state.phase === "select-model") {
       if (key.upArrow) {
         setState((s) => ({ ...s, modelIndex: Math.max(0, s.modelIndex - 1) }));
+        return;
       }
       if (key.downArrow) {
         setState((s) => ({
           ...s,
-          modelIndex: Math.min(s.models.length - 1, s.modelIndex + 1),
+          modelIndex: Math.min(filteredModels.length - 1, s.modelIndex + 1),
         }));
+        return;
+      }
+      if (key.backspace || key.delete) {
+        setState((s) => ({ ...s, modelSearch: s.modelSearch.slice(0, -1), modelIndex: 0 }));
+        return;
+      }
+      if (input && input.length === 1 && !key.ctrl && !key.meta && input.charCodeAt(0) >= 0x20) {
+        setState((s) => ({ ...s, modelSearch: s.modelSearch + input, modelIndex: 0 }));
+        return;
       }
       if (key.return) {
-        setState((s) => ({ ...s, phase: "review" }));
+        const selected = filteredModels[state.modelIndex];
+        const actualIndex = selected ? state.models.indexOf(selected) : state.modelIndex;
+        setState((s) => ({ ...s, modelIndex: actualIndex, modelSearch: "", phase: "review" }));
       }
       return;
     }
@@ -245,6 +259,10 @@ export function SettingsWizard({ initialSettings, onSubmit }: SettingsWizardProp
 
   const provider = getProviderById(state.providerId);
   const spinner = useSpinner(state.phase === "fetching-models");
+
+  const filteredModels = state.modelSearch
+    ? state.models.filter((m) => m.toLowerCase().includes(state.modelSearch.toLowerCase()))
+    : state.models;
 
   function handleFieldSubmit(value: string) {
     const trimmed = value.trim();
@@ -315,7 +333,7 @@ export function SettingsWizard({ initialSettings, onSubmit }: SettingsWizardProp
         <Text color="grey" dimColor>{"[Esc] cancel"}</Text>
       )}
       {state.phase === "select-model" && (
-        <Text color="grey" dimColor>{"[↑↓] navigate  [Enter] confirm  [Esc] back"}</Text>
+        <Text color="grey" dimColor>{"type to search · [↑↓] navigate  [Enter] confirm  [Esc] back"}</Text>
       )}
       {state.phase === "review" && (
         <Text color="grey" dimColor>{"[Enter] save  [Backspace] go back  [Esc] back"}</Text>
@@ -377,15 +395,27 @@ export function SettingsWizard({ initialSettings, onSubmit }: SettingsWizardProp
 
         {state.phase === "select-model" && (
           <Box flexDirection="column">
-            {state.models.map((m, i) => {
-              const selected = i === state.modelIndex;
-              return (
-                <Text key={m} color={selected ? "cyan" : "white"} bold={selected}>
-                  {selected ? "▶ " : "  "}
-                  {m}
-                </Text>
-              );
-            })}
+            <Box flexDirection="row" marginBottom={0}>
+              <Text color="grey">{"  / "}</Text>
+              <Text color="white">{state.modelSearch}</Text>
+              <Text color="cyan">{"█"}</Text>
+              {state.modelSearch && (
+                <Text color="grey" dimColor>{`  (${filteredModels.length} match${filteredModels.length === 1 ? "" : "es"})`}</Text>
+              )}
+            </Box>
+            {filteredModels.length === 0 ? (
+              <Text color="grey" dimColor>{"  No matches — keep typing or press Backspace"}</Text>
+            ) : (
+              filteredModels.map((m, i) => {
+                const selected = i === state.modelIndex;
+                return (
+                  <Text key={m} color={selected ? "cyan" : "white"} bold={selected}>
+                    {selected ? "▶ " : "  "}
+                    {m}
+                  </Text>
+                );
+              })
+            )}
           </Box>
         )}
 
