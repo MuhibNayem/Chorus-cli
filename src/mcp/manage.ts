@@ -1,6 +1,6 @@
 import { loadSettings, saveSettings, type McpServerSettings } from "../settings/storage.js";
 import { getMcpStatus } from "./client.js";
-import { formatMcpConfigExample, getProjectMcpTrust, trustProjectMcpConfig, untrustProjectMcpConfig, loadMcpServers } from "./config.js";
+import { formatMcpConfigExample, getProjectMcpTrust, trustProjectMcpConfig, untrustProjectMcpConfig, loadMcpServers, removeProjectMcpServer, removeAllProjectMcpServers } from "./config.js";
 import { runOAuthFlow, getAuthStatus, clearTokens, authStoreKey } from "./auth.js";
 
 type ParsedMcpAdd = {
@@ -119,13 +119,76 @@ export async function runMcpCliCommand(args: string[]): Promise<number> {
   }
 
   if (subcommand === "remove") {
-    const name = args[1];
-    if (!name) throw new Error("Usage: chorus mcp remove <name>");
-    const settings = loadSettings();
-    const servers = { ...(settings.mcp?.servers ?? {}) };
-    delete servers[name];
-    saveSettings({ ...settings, mcp: { ...(settings.mcp ?? {}), servers } });
-    console.log(`Removed user MCP server: ${name}`);
+    let name: string | undefined;
+    let scope: "user" | "project" | "both" = "both";
+    let all = false;
+
+    function isValidScope(v: string): v is "user" | "project" | "both" {
+      return v === "user" || v === "project" || v === "both";
+    }
+
+    for (let i = 1; i < args.length; i += 1) {
+      const flag = args[i];
+      if (flag === "--all") {
+        all = true;
+      } else if (flag === "--scope") {
+        const value = requireValue(args, i, flag);
+        if (!isValidScope(value)) throw new Error("--scope must be user, project, or both");
+        scope = value;
+        i += 1;
+      } else if (!name && !flag.startsWith("--")) {
+        name = flag;
+      } else {
+        throw new Error(`Unknown MCP remove option: ${flag}`);
+      }
+    }
+
+    if (all) {
+      let removed = false;
+      if (scope !== "project") {
+        const settings = loadSettings();
+        const userServers = settings.mcp?.servers ?? {};
+        if (Object.keys(userServers).length > 0) {
+          saveSettings({ ...settings, mcp: { ...(settings.mcp ?? {}), servers: {} } });
+          console.log(`Removed all user MCP servers (${Object.keys(userServers).length}).`);
+          removed = true;
+        }
+      }
+      if (scope !== "user") {
+        if (removeAllProjectMcpServers()) {
+          console.log("Removed all project MCP servers.");
+          removed = true;
+        }
+      }
+      if (!removed) {
+        console.log("No MCP servers to remove.");
+      }
+      return 0;
+    }
+
+    if (!name) throw new Error("Usage: chorus mcp remove <name> [--scope user|project|both] [--all]");
+
+    let removed = false;
+    if (scope !== "project") {
+      const settings = loadSettings();
+      const servers = { ...(settings.mcp?.servers ?? {}) };
+      if (servers[name]) {
+        delete servers[name];
+        saveSettings({ ...settings, mcp: { ...(settings.mcp ?? {}), servers } });
+        console.log(`Removed user MCP server: ${name}`);
+        removed = true;
+      }
+    }
+    if (scope !== "user") {
+      if (removeProjectMcpServer(name)) {
+        console.log(`Removed project MCP server: ${name}`);
+        removed = true;
+      }
+    }
+    if (!removed) {
+      console.error(`MCP server not found: ${name}`);
+      return 1;
+    }
     return 0;
   }
 
@@ -204,6 +267,6 @@ export async function runMcpCliCommand(args: string[]): Promise<number> {
     return 0;
   }
 
-  console.error("Usage: chorus mcp list | trust | untrust | add | add-json | remove | auth | unauth");
+  console.error("Usage: chorus mcp list | trust | untrust | add | add-json | remove [--all] [--scope user|project|both] | auth | unauth");
   return 1;
 }

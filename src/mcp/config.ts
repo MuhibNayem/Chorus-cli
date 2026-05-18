@@ -237,6 +237,32 @@ export function loadMcpServers(cwd = process.cwd()): McpServerConfig[] {
   return [...merged.values()];
 }
 
+export function removeProjectMcpServer(name: string, cwd = process.cwd()): boolean {
+  const filePath = projectConfigPath(cwd);
+  try {
+    const parsed = JSON.parse(fs.readFileSync(filePath, "utf-8")) as ProjectMcpConfig;
+    if (!parsed.mcpServers?.[name]) return false;
+    const servers = { ...parsed.mcpServers };
+    delete servers[name];
+    fs.writeFileSync(filePath, JSON.stringify({ ...parsed, mcpServers: servers }, null, 2), "utf-8");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function removeAllProjectMcpServers(cwd = process.cwd()): boolean {
+  const filePath = projectConfigPath(cwd);
+  try {
+    const parsed = JSON.parse(fs.readFileSync(filePath, "utf-8")) as ProjectMcpConfig;
+    if (!parsed.mcpServers || Object.keys(parsed.mcpServers).length === 0) return false;
+    fs.writeFileSync(filePath, JSON.stringify({ ...parsed, mcpServers: {} }, null, 2), "utf-8");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function formatMcpConfigExample(): string {
   return JSON.stringify({
     mcpServers: {

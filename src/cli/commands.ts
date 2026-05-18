@@ -6,7 +6,7 @@ import type { ApprovalPolicy, ExecutionMode } from "../harness/types.js";
 import { describeApprovalPolicy } from "./hooks/agent/toolPolicy.js";
 import { SWARM_PRESETS } from "../swarm/presets/index.js";
 import { buildSwarmReport, formatSwarmReport, listSwarmTraces } from "../swarm/report.js";
-import { getProjectMcpTrust, reloadMcpConnections, trustProjectMcpConfig, loadMcpServers, runOAuthFlow, getAuthStatus } from "../mcp/index.js";
+import { formatMcpConfigExample, getMcpStatus, getProjectMcpTrust, loadMcpServers, reloadMcpConnections, trustProjectMcpConfig, runOAuthFlow, getAuthStatus } from "../mcp/index.js";
 import { estimateCost, formatCost } from "../llm/pricing.js";
 import * as fs from "fs";
 import * as path from "path";
@@ -53,6 +53,8 @@ export interface CommandContext {
   showConfirmDialog?: (message: string, onConfirm: () => void) => void;
   /** Get accumulated session cost metrics */
   getSessionCost?: () => { inputTokens: number; outputTokens: number; costUsd: number };
+  /** Show interactive MCP server removal picker */
+  showMcpRemoveSelect?: () => void;
 }
 
 export interface SlashCommand {
@@ -119,6 +121,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: "/mcp-trust",     description: "Trust this workspace .mcp.json after review" },
   { name: "/mcp-auth",      description: "Start OAuth browser flow: /mcp-auth <server-name>" },
   { name: "/mcp-reload",    description: "Reconnect configured MCP servers" },
+  { name: "/mcp-remove",    description: "Remove an MCP server interactively" },
   // ── Config & exit ──────────────────────────────────────────────────────────
   { name: "/config",        description: "Configure API keys (Serper, Google CSE, Weather)" },
   { name: "/exit",          description: "Exit the CLI" },
@@ -141,7 +144,7 @@ function buildHelpText(): string {
     else if (["/sessions","/session","/resume","/session-new"].includes(cmd.name)) group = "Sessions";
     else if (["/agents","/btw","/goal","/advisor"].includes(cmd.name)) group = "Agents";
     else if (["/swarm","/swarm-stop","/swarm-traces","/swarm-report"].includes(cmd.name)) group = "Swarm";
-    else if (["/mcp","/mcp-add","/mcp-trust","/mcp-auth","/mcp-reload"].includes(cmd.name)) group = "MCP";
+    else if (["/mcp","/mcp-add","/mcp-trust","/mcp-auth","/mcp-reload","/mcp-remove"].includes(cmd.name)) group = "MCP";
     else if (["/config","/exit"].includes(cmd.name)) group = "Config";
 
     if (!groups[group]) { groups[group] = []; order.push(group); }
@@ -795,6 +798,15 @@ export function handleSlashCommand(
         .catch((error) => {
           ctx.dispatch({ type: "APPEND_SYSTEM", id, text: `OAuth failed: ${error instanceof Error ? error.message : String(error)}` });
         });
+      return true;
+    }
+
+    case "/mcp-remove": {
+      if (ctx.showMcpRemoveSelect) {
+        ctx.showMcpRemoveSelect();
+      } else {
+        ctx.dispatch({ type: "APPEND_SYSTEM", id, text: "MCP removal is not available in this context. Use: chorus mcp remove <name> [--scope user|project|both] [--all]" });
+      }
       return true;
     }
 

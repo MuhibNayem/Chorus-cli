@@ -25,6 +25,7 @@ import type { ChorusSettings } from "../settings/storage.js";
 import type { AgentSession } from "./state/feedReducer.js";
 import type { AgentDef } from "../agents/types.js";
 import type { ApprovalPolicy, ExecutionMode } from "../harness/types.js";
+import { loadMcpServers, removeProjectMcpServer, removeAllProjectMcpServers, reloadMcpConnections } from "../mcp/index.js";
 import { loadAgents } from "../agents/loader.js";
 import { deleteAgent } from "../agents/storage.js";
 import { AgentCreator } from "./components/AgentCreator.js";
@@ -883,6 +884,65 @@ export function App() {
     setSelectionIndex(0);
   }, []);
 
+  const showMcpRemoveSelect = useCallback(() => {
+    const configs = loadMcpServers();
+    if (configs.length === 0) {
+      dispatch({ type: "APPEND_SYSTEM", id: `sys-${Date.now()}`, text: "No MCP servers configured." });
+      return;
+    }
+
+    const items: SelectItem[] = configs.map((c) => ({
+      value: `${c.source}:${c.name}`,
+      label: `${c.source === "project" ? "⊙" : "✎"} ${c.name.padEnd(20)}  ${c.command ?? c.url ?? ""}`,
+    }));
+    items.push({ value: "__all__", label: "🗑  Remove ALL MCP servers" });
+    items.push({ value: "__cancel__", label: "Cancel" });
+
+    setSelectionMode({
+      title: "Remove MCP server",
+      items,
+      onSelect: (value) => {
+        setSelectionMode(null);
+        if (value === "__cancel__") return;
+
+        if (value === "__all__") {
+          showConfirmDialog("Remove ALL MCP servers (user + project)?", () => {
+            const settings = loadSettings();
+            const userCount = Object.keys(settings.mcp?.servers ?? {}).length;
+            if (userCount > 0) {
+              saveSettings({ ...settings, mcp: { ...(settings.mcp ?? {}), servers: {} } });
+            }
+            removeAllProjectMcpServers();
+            void reloadMcpConnections().then((statuses) => {
+              dispatch({ type: "APPEND_SYSTEM", id: `sys-${Date.now()}`, text: `Removed all MCP servers. Reloaded: ${statuses.length} servers.` });
+            });
+          });
+          return;
+        }
+
+        const [source, name] = value.split(":");
+        const config = configs.find((c) => c.name === name && c.source === source);
+        if (!config) return;
+
+        showConfirmDialog(`Remove MCP server "${name}" (${source})?`, () => {
+          if (source === "user") {
+            const settings = loadSettings();
+            const servers = { ...(settings.mcp?.servers ?? {}) };
+            delete servers[name];
+            saveSettings({ ...settings, mcp: { ...(settings.mcp ?? {}), servers } });
+          } else if (source === "project") {
+            removeProjectMcpServer(name);
+          }
+          void reloadMcpConnections().then((statuses) => {
+            const connected = statuses.filter((s) => s.connected).length;
+            dispatch({ type: "APPEND_SYSTEM", id: `sys-${Date.now()}`, text: `Removed "${name}". MCP reload: ${connected}/${statuses.length} connected.` });
+          });
+        });
+      },
+    });
+    setSelectionIndex(0);
+  }, [dispatch, showConfirmDialog]);
+
   const showFilePicker = useCallback((onSelect: (filePath: string, content: string) => void) => {
     const files = workspaceFiles.current
       .filter((file) => !isSecretFile(file))
@@ -1310,6 +1370,7 @@ export function App() {
         showFilePicker,
         showConfirmDialog,
         getSessionCost,
+        showMcpRemoveSelect,
         showModeModelSelect: (mode) => {
           const provider = sessionProvider ?? displayLabel.split(":")[0];
           setSelectionMode({
@@ -1381,7 +1442,7 @@ export function App() {
         if (abortRef.current === controller) abortRef.current = null;
       }
     },
-    [submit, submitBtw, clearHistory, getMessages, feedState.processing, exit, dispatch, suggestionIndex, activeSuggestions, slashSuggestions, onResumeSession, onNewSession, displayLabel, sessionProvider, sessionModel, executionMode, approvalPolicy, advisorEnabled, showModelSelectForProvider, showProviderSelect, showResumeSelect, showDefaultProviderSelect, showAgents, showingApiKeysConfig, runSwarmPreset, stopSwarm, listSwarmTraces, showSwarmReport, sendAgentMessage, runShellStream, showFilePicker, showConfirmDialog, getSessionCost]
+    [submit, submitBtw, clearHistory, getMessages, feedState.processing, exit, dispatch, suggestionIndex, activeSuggestions, slashSuggestions, onResumeSession, onNewSession, displayLabel, sessionProvider, sessionModel, executionMode, approvalPolicy, advisorEnabled, showModelSelectForProvider, showProviderSelect, showResumeSelect, showDefaultProviderSelect, showAgents, showingApiKeysConfig, runSwarmPreset, stopSwarm, listSwarmTraces, showSwarmReport, sendAgentMessage, runShellStream, showFilePicker, showConfirmDialog, getSessionCost, showMcpRemoveSelect]
   );
 
   const agentState = useMemo<AgentState>(() => {

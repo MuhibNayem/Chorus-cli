@@ -17,6 +17,7 @@ Usage:
   chorus mcp trust
   chorus mcp add <name> --type stdio --command <cmd> [--arg value] [--env KEY=VALUE]
   chorus mcp add <name> --type http --url <url> [--header KEY=VALUE] [--bearer-token-env VAR]
+  chorus mcp remove <name> [--scope user|project|both] [--all]
   chorus mcp add-json <name> '<json>'
   chorus --help
   chorus --version
