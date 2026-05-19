@@ -8,6 +8,7 @@
 
 export type TaskState =
   | "submitted"
+  | "queued"
   | "working"
   | "input-required"
   | "completed"

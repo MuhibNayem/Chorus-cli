@@ -2,6 +2,12 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { getProviderById } from "./providers.js";
+import {
+  loadEncryptedApiKeys,
+  saveEncryptedApiKeys,
+  clearSecretsCache,
+  migrateFromPlaintext,
+} from "./secrets.js";
 
 export type ChorusProviderSettings = {
   apiKey?: string;
@@ -27,6 +33,10 @@ export type ChorusApiKeys = {
   googleCseKey?: string;
   googleCseId?: string;
   weather?: string;
+  telegramBotToken?: string;
+  telegramAllowedUserIds?: string;
+  /** Optional bearer token to authenticate A2A HTTP endpoint requests. */
+  a2aBearerToken?: string;
 };
 
 export type McpServerSettings = {
@@ -181,40 +191,73 @@ export function isAdvisorEnabled(): boolean {
 
 export function clearSettingsCache(): void {
   cachedSettings = null;
+  clearSecretsCache();
 }
 
-// ── API key resolution (env wins, settings fallback) ──────────────────────────
+// ── API key resolution ─────────────────────────────────────────────────────────
+// Priority: env var → encrypted store (~/.chorus/api-keys.enc) → plaintext migration
 
-function envOrApiKey(envVar: string, settingsKey: keyof ChorusApiKeys): string | undefined {
-  return process.env[envVar] ?? loadSettings().apiKeys?.[settingsKey];
+function getStoredApiKeys(): ChorusApiKeys {
+  const enc = loadEncryptedApiKeys();
+  if (Object.keys(enc).length > 0) return enc;
+  // First-run migration: move plaintext keys into encrypted store.
+  const plaintext = loadSettings().apiKeys ?? {};
+  migrateFromPlaintext(plaintext);
+  return plaintext;
+}
+
+function envOrKey(envVar: string, settingsKey: keyof ChorusApiKeys): string | undefined {
+  return process.env[envVar] ?? getStoredApiKeys()[settingsKey];
 }
 
 export function getSerperApiKey(): string | undefined {
-  return envOrApiKey("SERPER_API_KEY", "serper");
+  return envOrKey("SERPER_API_KEY", "serper");
 }
 
 export function getGoogleCseApiKey(): string | undefined {
-  return envOrApiKey("GOOGLE_CSE_API_KEY", "googleCseKey");
+  return envOrKey("GOOGLE_CSE_API_KEY", "googleCseKey");
 }
 
 export function getGoogleCseId(): string | undefined {
-  return envOrApiKey("GOOGLE_CSE_ID", "googleCseId");
+  return envOrKey("GOOGLE_CSE_ID", "googleCseId");
 }
 
 export function getWeatherApiKey(): string | undefined {
-  return envOrApiKey("WEATHER_API_KEY", "weather");
+  return envOrKey("WEATHER_API_KEY", "weather");
+}
+
+export function getTelegramBotToken(): string | undefined {
+  return envOrKey("TELEGRAM_BOT_TOKEN", "telegramBotToken");
+}
+
+export function getTelegramAllowedUserIds(): string | undefined {
+  return envOrKey("TELEGRAM_ALLOWED_USER_IDS", "telegramAllowedUserIds");
+}
+
+export function getA2ABearerToken(): string | undefined {
+  return envOrKey("A2A_BEARER_TOKEN", "a2aBearerToken");
 }
 
 export function getApiKeyStatus(): Array<{ label: string; key: keyof ChorusApiKeys; envVar: string; value: string | undefined; fromEnv: boolean }> {
   return [
-    { label: "Serper API key",      key: "serper",       envVar: "SERPER_API_KEY",     value: getSerperApiKey(),     fromEnv: !!process.env.SERPER_API_KEY },
-    { label: "Google CSE API key",  key: "googleCseKey", envVar: "GOOGLE_CSE_API_KEY", value: getGoogleCseApiKey(),  fromEnv: !!process.env.GOOGLE_CSE_API_KEY },
-    { label: "Google CSE ID",       key: "googleCseId",  envVar: "GOOGLE_CSE_ID",      value: getGoogleCseId(),      fromEnv: !!process.env.GOOGLE_CSE_ID },
-    { label: "Weather API key",     key: "weather",      envVar: "WEATHER_API_KEY",     value: getWeatherApiKey(),    fromEnv: !!process.env.WEATHER_API_KEY },
+    { label: "Serper API key",          key: "serper",                envVar: "SERPER_API_KEY",            value: getSerperApiKey(),            fromEnv: !!process.env.SERPER_API_KEY },
+    { label: "Google CSE API key",      key: "googleCseKey",          envVar: "GOOGLE_CSE_API_KEY",        value: getGoogleCseApiKey(),         fromEnv: !!process.env.GOOGLE_CSE_API_KEY },
+    { label: "Google CSE ID",           key: "googleCseId",           envVar: "GOOGLE_CSE_ID",             value: getGoogleCseId(),             fromEnv: !!process.env.GOOGLE_CSE_ID },
+    { label: "Weather API key",         key: "weather",               envVar: "WEATHER_API_KEY",           value: getWeatherApiKey(),           fromEnv: !!process.env.WEATHER_API_KEY },
+    { label: "Telegram bot token",      key: "telegramBotToken",      envVar: "TELEGRAM_BOT_TOKEN",        value: getTelegramBotToken(),        fromEnv: !!process.env.TELEGRAM_BOT_TOKEN },
+    { label: "Telegram allowed IDs",    key: "telegramAllowedUserIds",envVar: "TELEGRAM_ALLOWED_USER_IDS", value: getTelegramAllowedUserIds(),  fromEnv: !!process.env.TELEGRAM_ALLOWED_USER_IDS },
+    { label: "A2A bearer token",        key: "a2aBearerToken",        envVar: "A2A_BEARER_TOKEN",          value: getA2ABearerToken(),          fromEnv: !!process.env.A2A_BEARER_TOKEN },
   ];
 }
 
 export function saveApiKeys(keys: ChorusApiKeys): void {
-  const existing = loadSettings();
-  saveSettings({ ...existing, apiKeys: { ...existing.apiKeys, ...keys } });
+  const existing = getStoredApiKeys();
+  saveEncryptedApiKeys({ ...existing, ...keys });
+  // Keep settings.json apiKeys blank — everything lives in the encrypted store.
+  const settings = loadSettings();
+  if (settings.apiKeys && Object.keys(settings.apiKeys).length > 0) {
+    settings.apiKeys = {};
+    atomicWrite(getSettingsPath(), settings);
+    cachedSettings = settings;
+  }
 }
