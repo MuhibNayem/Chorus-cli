@@ -1,3 +1,10 @@
+# [0.4.0](https://github.com/MuhibNayem/Chorus-cli/compare/v0.3.0...v0.4.0) (2026-05-19)
+
+
+### Features
+
+* implement autonomous task scheduler with cron, goal-driven, and one-shot execution modes along with gateway infrastructure. ([e41904e](https://github.com/MuhibNayem/Chorus-cli/commit/e41904ee97bd289f3f0c3ca7a826a0450ceca056))
+
 # [0.4.0](https://github.com/MuhibNayem/Chorus-cli/compare/v0.3.0...v0.4.0) (2026-05-20)
 
 

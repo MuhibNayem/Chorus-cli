@@ -1,6 +1,6 @@
 {
   "name": "chorus-agent-cli",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "The most powerful open-source AI coding agent for the terminal. Goal-driven autonomous loops, side-channel conversations, pre-flight advisor workers, multi-agent swarms, adaptive skills, full-diff file rendering, and MCP with OAuth.",
   "type": "module",
   "main": "dist/index.js",
